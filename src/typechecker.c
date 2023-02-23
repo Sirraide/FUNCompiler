@@ -2,6 +2,7 @@
 
 #include <ast.h>
 #include <error.h>
+#include <lexer.h>
 #include <parser.h>
 #include <utils.h>
 #include <vector.h>

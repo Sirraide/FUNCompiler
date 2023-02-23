@@ -48,6 +48,7 @@ add_executable(
   src/ast.c
   src/codegen.c
   src/error.c
+  src/lexer.c
   src/main.c
   src/ir_parser.c
   src/parser.c

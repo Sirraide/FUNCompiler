@@ -1,6 +1,7 @@
 #include "parser.h"
 
 #include <error.h>
+#include <lexer.h>
 #include <math.h>
 #include <platform.h>
 #include <stdarg.h>
