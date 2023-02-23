@@ -7,6 +7,36 @@
 #include <error.h>
 #include <codegen/codegen_forward.h>
 #include <ast.h>
+#include <setjmp.h>
+
+typedef struct Token {
+  enum TokenType type;
+  loc source_location;
+  string_buffer text;
+  u64 integer;
+} Token;
+
+typedef struct Lexer {
+  /// The source code that we’re parsing.
+  span source;
+
+  /// The name of the file that we’re parsing.
+  const char *filename;
+
+  /// The last character read.
+  char lastc;
+
+  /// Lexer state.
+  const char *curr;
+  const char *end;
+
+  /// The current token.
+  Token tok;
+
+  /// For error handling.
+  jmp_buf error_buffer;
+} Lexer;
+
 
 /// Parse a program.
 ///

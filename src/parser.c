@@ -4,7 +4,6 @@
 #include <error.h>
 #include <parser.h>
 #include <setjmp.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <vector.h>
@@ -15,10 +14,10 @@
 #define ISSUE_DIAGNOSTIC(sev, loc, parser, ...)                                        \
   do {                                                                                 \
     issue_diagnostic((sev), (parser)->filename, (parser)->source, (loc), __VA_ARGS__); \
-    longjmp(parser->error_buffer, 1);                                                  \
+    longjmp((parser)->error_buffer, 1);                                                  \
   } while (0)
-#define ERR_AT(loc, ...) ISSUE_DIAGNOSTIC(DIAG_ERR, loc, p, __VA_ARGS__)
-#define ERR(...)         ERR_AT(p->tok.source_location, __VA_ARGS__)
+#define ERR_AT(p, loc, ...) ISSUE_DIAGNOSTIC(DIAG_ERR, loc, (p), __VA_ARGS__)
+#define ERR(p, ...)         ERR_AT((p), (p)->tok.source_location, __VA_ARGS__)
 
 /// ===========================================================================
 ///  Types and enums.
@@ -27,38 +26,14 @@ enum {
   PREFIX_PRECEDENCE = 10000,
 };
 
-typedef struct Token {
-  enum TokenType type;
-  loc source_location;
-  string_buffer text;
-  u64 integer;
-} Token;
-
 typedef struct Parser {
-  /// The source code that we’re parsing.
-  span source;
-
-  /// The name of the file that we’re parsing.
-  const char *filename;
-
-  /// The last character read.
-  char lastc;
-
-  /// Lexer state.
-  const char *curr;
-  const char *end;
+  Lexer l;
 
   /// Whether we’re in a function.
   bool in_function;
 
-  /// The current token.
-  Token tok;
-
   /// The AST of the program.
   AST *ast;
-
-  /// For error handling.
-  jmp_buf error_buffer;
 } Parser;
 
 /// ===========================================================================
@@ -88,7 +63,7 @@ static bool iscontinue(char c) {
 }
 
 /// Lex the next character.
-static void next_char(Parser *p) {
+static void next_char(Lexer *p) {
   /// Keep returning EOF once EOF has been reached.
   if (p->curr >= p->end) {
     p->lastc = 0;
@@ -97,7 +72,7 @@ static void next_char(Parser *p) {
 
   /// Read the next character.
   p->lastc = *p->curr++;
-  if (p->lastc == 0) ERR("Lexer can not handle null bytes");
+  if (p->lastc == 0) ERR(p, "Lexer can not handle null bytes");
 
   /// Collapse CRLF and LFCR to a single newline,
   /// but keep CRCR and LFLF as two newlines.
@@ -120,7 +95,7 @@ static void next_char(Parser *p) {
 }
 
 /// Lex an identifier.
-static void next_identifier(Parser *p) {
+static void next_identifier(Lexer *p) {
   /// The start of the identifier.
   p->tok.type = TK_IDENT;
   next_char(p);
@@ -133,7 +108,7 @@ static void next_identifier(Parser *p) {
 }
 
 /// Lex a string.
-static void next_string(Parser *p) {
+static void next_string(Lexer *p) {
   /// Yeet the delimiter and clear the string.
   char delim = p->lastc;
   vector_clear(p->tok.text);
@@ -142,7 +117,7 @@ static void next_string(Parser *p) {
   /// Single-quoted strings are not escaped.
   if (delim == '\'') {
     while (p->lastc != delim) {
-      if (p->lastc == 0) ERR("Unterminated string literal");
+      if (p->lastc == 0) ERR(p, "Unterminated string literal");
       vector_push(p->tok.text, p->lastc);
       next_char(p);
     }
@@ -152,7 +127,7 @@ static void next_string(Parser *p) {
   else {
     ASSERT(delim == '"');
     while (p->lastc != delim) {
-      if (p->lastc == 0) ERR("Unterminated string literal");
+      if (p->lastc == 0) ERR(p, "Unterminated string literal");
 
       /// Handle escape sequences.
       if (p->lastc == '\\') {
@@ -170,7 +145,7 @@ static void next_string(Parser *p) {
           case '\'': vector_push(p->tok.text, '\''); break;
           case '\"': vector_push(p->tok.text, '\"'); break;
           case '\\': vector_push(p->tok.text, '\\'); break;
-          default: ERR("Invalid escape sequence");
+          default: ERR(p, "Invalid escape sequence");
         }
       }
 
@@ -181,13 +156,13 @@ static void next_string(Parser *p) {
   }
 
   /// Make sure the string is terminated by the delimiter.
-  if (p->lastc != delim) ERR("Unterminated string literal");
+  if (p->lastc != delim) ERR(p, "Unterminated string literal");
   p->tok.type = TK_STRING;
   next_char(p);
 }
 
 /// Parse a number.
-static void parse_number(Parser *p, int base) {
+static void parse_number(Lexer *p, int base) {
   /// Zero-terminate the string or else `strtoull()` might try
   /// to convert data left over from the previous token.
   string_buf_zterm(&p->tok.text);
@@ -196,12 +171,12 @@ static void parse_number(Parser *p, int base) {
   char *end;
   errno = 0;
   p->tok.integer = (u64) strtoull(p->tok.text.data, &end, base);
-  if (errno == ERANGE) ERR("Integer literal too large");
-  if (end != p->tok.text.data + p->tok.text.size) ERR("Invalid integer literal");
+  if (errno == ERANGE) ERR(p, "Integer literal too large");
+  if (end != p->tok.text.data + p->tok.text.size) ERR(p, "Invalid integer literal");
 }
 
 /// Lex a number.
-static void next_number(Parser *p) {
+static void next_number(Lexer *p) {
   /// Record the start of the number.
   vector_clear(p->tok.text);
   p->tok.integer = 0;
@@ -213,7 +188,7 @@ static void next_number(Parser *p) {
     next_char(p);
 
     /// Another zero is an error.
-    if (p->lastc == '0') ERR("Leading zeroes are not allowed in decimal literals. Use 0o/0O for octal literals.");
+    if (p->lastc == '0') ERR(p, "Leading zeroes are not allowed in decimal literals. Use 0o/0O for octal literals.");
 
 #define DO_PARSE_NUMBER(name, chars, condition, base)                       \
   /** Read all chars that are part of the literal. **/                      \
@@ -229,7 +204,7 @@ static void next_number(Parser *p) {
                                                                             \
     /** We need at least one digit. **/                                     \
     p->tok.source_location.end = (u32) ((p->curr - 1) - p->source.data);    \
-    if (p->tok.text.size == 0) ERR("Expected at least one " name " digit"); \
+    if (p->tok.text.size == 0) ERR(p, "Expected at least one " name " digit"); \
                                                                             \
     /** Actually parse the number. **/                                      \
     return parse_number(p, base);                                           \
@@ -245,7 +220,7 @@ static void next_number(Parser *p) {
     if (isspace(p->lastc) || !isalpha(p->lastc)) return;
 
     /// Anything else is an error.
-    ERR("Invalid integer literal");
+    ERR(p, "Invalid integer literal");
   }
 
   /// Any other digit means we have a decimal number.
@@ -258,11 +233,11 @@ static void next_number(Parser *p) {
   }
 
   /// Anything else is an error.
-  ERR("Invalid integer literal");
+  ERR(p, "Invalid integer literal");
 }
 
 /// Lex the next token.
-static void next_token(Parser *p) {
+static void next_token(Lexer *p) {
   /// Keep returning EOF once EOF has been reached.
   if (!p->lastc) {
     p->tok.type = TK_EOF;
@@ -367,7 +342,7 @@ static void next_token(Parser *p) {
         p->tok.integer = -p->tok.integer;
 
         /// The character after a number must be a whitespace or delimiter.
-        if (isalpha(p->lastc)) ERR("Invalid integer literal");
+        if (isalpha(p->lastc)) ERR(p, "Invalid integer literal");
       } else {
         p->tok.type = TK_MINUS;
       }
@@ -477,12 +452,12 @@ static void next_token(Parser *p) {
         next_number(p);
 
         /// The character after a number must be a whitespace or delimiter.
-        if (isalpha(p->lastc)) ERR("Invalid integer literal");
+        if (isalpha(p->lastc)) ERR(p, "Invalid integer literal");
         break;
       }
 
       /// Anything else is invalid.
-      ERR("Invalid token");
+      ERR(p, "Invalid token");
   }
 
 done:
@@ -498,9 +473,9 @@ static Scope *curr_scope(Parser *p) { return vector_back(p->ast->scope_stack); }
 
 /// Consume a token; error if it's not the expected type.
 static void consume(Parser *p, enum TokenType tt) {
-  if (p->tok.type != tt) ERR("Expected %s, but got %s",
-    token_type_to_string(tt), token_type_to_string(p->tok.type));
-  next_token(p);
+  if (p->l.tok.type != tt) ERR(&p->l, "Expected %s, but got %s",
+    token_type_to_string(tt), token_type_to_string(p->l.tok.type));
+  next_token(&p->l);
 }
 
 /// Check if a token can be a postfix operator.
@@ -594,7 +569,7 @@ static Node *parse_expr(Parser *p) { return parse_expr_with_precedence(p, 0); }
 
 /// <expr-block>     ::= "{" { <expression> } "}"
 static Node *parse_block(Parser *p, bool create_new_scope) {
-  loc pos = p->tok.source_location;
+  loc pos = p->l.tok.source_location;
   consume(p, TK_LBRACE);
 
   /// Create a new scope.
@@ -602,7 +577,7 @@ static Node *parse_block(Parser *p, bool create_new_scope) {
 
   /// Collect the children.
   Nodes children = {0};
-  while (p->tok.type != TK_RBRACE) vector_push(children, parse_expr(p));
+  while (p->l.tok.type != TK_RBRACE) vector_push(children, parse_expr(p));
   consume(p, TK_RBRACE);
 
   /// Pop the scope.
@@ -615,7 +590,7 @@ static Node *parse_block(Parser *p, bool create_new_scope) {
 /// <expr-if>        ::= IF <expression> <expr-block> [ ELSE <expr-block> ]
 static Node *parse_if_expr(Parser *p) {
   /// Yeet "if".
-  loc if_loc = p->tok.source_location;
+  loc if_loc = p->l.tok.source_location;
   consume(p, TK_IF);
 
   /// Parse the condition.
@@ -628,8 +603,8 @@ static Node *parse_if_expr(Parser *p) {
 
   /// Parse the "else" block if there is one.
   Node *else_block = NULL;
-  if (p->tok.type == TK_ELSE) {
-    next_token(p);
+  if (p->l.tok.type == TK_ELSE) {
+    next_token(&p->l);
     scope_push(p->ast);
     else_block = parse_expr(p);
     scope_pop(p->ast);
@@ -642,7 +617,7 @@ static Node *parse_if_expr(Parser *p) {
 /// <expr-while>     ::= WHILE <expression> <expression>
 static Node *parse_while_expr(Parser *p) {
   /// Yeet "while".
-  loc while_loc = p->tok.source_location;
+  loc while_loc = p->l.tok.source_location;
   consume(p, TK_WHILE);
 
   /// Parse the condition.
@@ -663,13 +638,13 @@ static Node *parse_call_expr(Parser *p, Node *callee) {
 
   /// Collect the arguments.
   Nodes args = {0};
-  while (p->tok.type != TK_RPAREN) {
+  while (p->l.tok.type != TK_RPAREN) {
     vector_push(args, parse_expr(p));
-    if (p->tok.type == TK_COMMA) next_token(p);
+    if (p->l.tok.type == TK_COMMA) next_token(&p->l);
   }
 
   /// Done.
-  Node *call = ast_make_call(p->ast, (loc){callee->source_location.start, p->tok.source_location.end}, callee, args);
+  Node *call = ast_make_call(p->ast, (loc){callee->source_location.start, p->l.tok.source_location.end}, callee, args);
   consume(p, TK_RPAREN);
   return call;
 }
@@ -684,7 +659,7 @@ static Node *parse_function_body(Parser *p, Type *function_type, Nodes *param_de
   p->in_function = true;
 
   /// Yeet "=" if found.
-  if (p->tok.type == TK_EQ) next_token(p);
+  if (p->l.tok.type == TK_EQ) next_token(&p->l);
 
   /// Push a new scope for the body and parameters.
   scope_push(p->ast);
@@ -693,7 +668,7 @@ static Node *parse_function_body(Parser *p, Type *function_type, Nodes *param_de
   foreach (Parameter , param, function_type->function.parameters) {
     Node *var = ast_make_declaration(p->ast, param->source_location, param->type, as_span(param->name), NULL);
     if (!scope_add_symbol(curr_scope(p), SYM_VARIABLE, as_span(var->declaration.name), var))
-      ERR_AT(var->source_location, "Redefinition of parameter '%S'", var->declaration.name);
+      ERR_AT(&p->l, var->source_location, "Redefinition of parameter '%S'", var->declaration.name);
     vector_push(*param_decls, var);
   }
 
@@ -729,15 +704,15 @@ static Node *parse_type_expr(Parser *p, Type *type) {
 
   /// Otherwise, this is an error.
   /// TODO: Struct literals.
-  ERR_AT(type->source_location, "Expected expression, got type");
+  ERR_AT(&p->l, type->source_location, "Expected expression, got type");
 }
 
 /// <param-decl> ::= <decl-start> <type>
 static Parameter parse_param_decl(Parser *p) {
-  loc start = p->tok.source_location;
+  loc start = p->l.tok.source_location;
 
   /// Parse the name, colon, and type.
-  string name = string_dup(p->tok.text);
+  string name = string_dup(p->l.tok.text);
   consume(p, TK_IDENT);
   consume(p, TK_COLON);
   Type *type = parse_type(p);
@@ -751,10 +726,10 @@ static Parameter parse_param_decl(Parser *p) {
 }
 
 static Member parse_struct_member(Parser *p) {
-  loc start = p->tok.source_location;
+  loc start = p->l.tok.source_location;
 
   /// Parse the name, colon, and type.
-  string name = string_dup(p->tok.text);
+  string name = string_dup(p->l.tok.text);
   consume(p, TK_IDENT);
   consume(p, TK_COLON);
   Type *type = parse_type(p);
@@ -775,24 +750,24 @@ static Type *parse_type_derived(Parser *p, Type *base) {
 
   /// Parse the rest of the type.
   for (;;) {
-    switch (p->tok.type) {
+    switch (p->l.tok.type) {
       /// Array type.
       case TK_LBRACK: {
-        next_token(p);
+        next_token(&p->l);
         Node *size = parse_expr(p);
 
         /// TODO: Evaluate the size as a constant expression.
         if (size->kind != NODE_LITERAL || size->literal.type != TK_NUMBER)
-          ISSUE_DIAGNOSTIC(DIAG_SORRY, size->source_location, p,
+          ISSUE_DIAGNOSTIC(DIAG_SORRY, size->source_location, &p->l,
             "Non-literal array size not supported");
         usz dim = size->literal.integer;
 
         /// Yeet "]" and record the location.
-        loc l = {.start = base->source_location.start, .end = p->tok.source_location.end};
+        loc l = {.start = base->source_location.start, .end = p->l.tok.source_location.end};
         consume(p, TK_RBRACK);
 
         /// Base type must not be incomplete.
-        if (type_is_incomplete(base)) ERR_AT(l, "Cannot create array of incomplete type: %T", base);
+        if (type_is_incomplete(base)) ERR_AT(&p->l, l, "Cannot create array of incomplete type: %T", base);
 
         /// Create the array type.
         base = ast_make_type_array(p->ast, l, base, dim);
@@ -800,19 +775,19 @@ static Type *parse_type_derived(Parser *p, Type *base) {
 
       /// Function type.
       case TK_LPAREN: {
-        next_token(p);
+        next_token(&p->l);
 
         /// Collect the arguments.
         Parameters args = {0};
-        while (p->tok.type != TK_RPAREN) {
+        while (p->l.tok.type != TK_RPAREN) {
           Parameter decl = parse_param_decl(p);
           vector_push(args, decl);
-          if (p->tok.type == TK_COMMA) next_token(p);
+          if (p->l.tok.type == TK_COMMA) next_token(&p->l);
         }
 
 
         /// Yeet ")".
-        loc l = {.start = base->source_location.start, .end = p->tok.source_location.end};
+        loc l = {.start = base->source_location.start, .end = p->l.tok.source_location.end};
         consume(p, TK_RPAREN);
 
         /// Create the function type.
@@ -830,40 +805,40 @@ static Type *parse_type_derived(Parser *p, Type *base) {
 /// <type-struct>    ::= TYPE <struct-body>
 /// <type-base>      ::= IDENTIFIER
 static Type *parse_type(Parser *p) {
-  loc start = p->tok.source_location;
+  loc start = p->l.tok.source_location;
 
   /// Collect pointers.
   usz level = 0;
-  while (p->tok.type == TK_AT) {
+  while (p->l.tok.type == TK_AT) {
     level++;
-    next_token(p);
+    next_token(&p->l);
   }
 
   /// Parse the base type.
-  if (p->tok.type == TK_IDENT) {
+  if (p->l.tok.type == TK_IDENT) {
     /// Make sure the identifier is a type.
-    Symbol *sym = scope_find_or_add_symbol(curr_scope(p), SYM_TYPE, as_span(p->tok.text), false);
-    if (sym->kind != SYM_TYPE) ERR("'%S' is not a type!", as_span(p->tok.text));
+    Symbol *sym = scope_find_or_add_symbol(curr_scope(p), SYM_TYPE, as_span(p->l.tok.text), false);
+    if (sym->kind != SYM_TYPE) ERR(&p->l, "'%S' is not a type!", as_span(p->l.tok.text));
 
     /// Create a named type from it.
-    Type *base = ast_make_type_named(p->ast, p->tok.source_location, sym);
+    Type *base = ast_make_type_named(p->ast, p->l.tok.source_location, sym);
 
     /// If we have pointer indirection levels, wrap the type in a pointer.
-    while (level--) base = ast_make_type_pointer(p->ast, (loc){start.start--, p->tok.source_location.end}, base);
+    while (level--) base = ast_make_type_pointer(p->ast, (loc){start.start--, p->l.tok.source_location.end}, base);
 
     /// Yeet the identifier and parse the rest of the type.
     base->source_location.start = start.start;
-    next_token(p);
+    next_token(&p->l);
     return parse_type_derived(p, base);
   }
 
   /// Alternatively, we allow any type, enclosed in parens.
-  if (p->tok.type == TK_LPAREN) {
-    next_token(p);
+  if (p->l.tok.type == TK_LPAREN) {
+    next_token(&p->l);
     Type *base = parse_type(p);
 
     /// If we have pointer indirection levels, wrap the type in a pointer.
-    while (level--) base = ast_make_type_pointer(p->ast, (loc){start.start--, p->tok.source_location.end}, base);
+    while (level--) base = ast_make_type_pointer(p->ast, (loc){start.start--, p->l.tok.source_location.end}, base);
 
     /// Yeet ")" and parse the rest of the type.
     base->source_location.start = start.start;
@@ -872,23 +847,23 @@ static Type *parse_type(Parser *p) {
   }
 
   // Structure type definition
-  if (p->tok.type == TK_TYPE) {
-    loc type_kw_loc = p->tok.source_location;
+  if (p->l.tok.type == TK_TYPE) {
+    loc type_kw_loc = p->l.tok.source_location;
     // Yeet TK_TYPE
-    next_token(p);
+    next_token(&p->l);
     consume(p, TK_LBRACE);
     Members members = {0};
-    while (p->tok.type != TK_RBRACE) {
+    while (p->l.tok.type != TK_RBRACE) {
       Member member_decl = parse_struct_member(p);
       vector_push(members, member_decl);
-      if (p->tok.type == TK_COMMA) next_token(p);
+      if (p->l.tok.type == TK_COMMA) next_token(&p->l);
     }
     consume(p, TK_RBRACE);
     return ast_make_type_struct(p->ast, type_kw_loc, members);
   }
 
   /// Invalid base type.
-  ERR("Expected base type, got %s", token_type_to_string(p->tok.type));
+  ERR(&p->l, "Expected base type, got %s", token_type_to_string(p->l.tok.type));
 }
 
 /// <expr-decl>      ::= <decl-start> <decl-rest>
@@ -898,9 +873,9 @@ static Type *parse_type(Parser *p) {
 static Node *parse_decl_rest(Parser *p, string ident, loc location) {
   /// If the next token is "ext", then this is an external declaration.
   bool is_ext = false;
-  if (p->tok.type == TK_EXT) {
+  if (p->l.tok.type == TK_EXT) {
     is_ext = true;
-    next_token(p);
+    next_token(&p->l);
   }
 
   /// Parse the type.
@@ -914,7 +889,7 @@ static Node *parse_decl_rest(Parser *p, string ident, loc location) {
       Symbol *sym = scope_add_symbol_unconditional(curr_scope(p), SYM_FUNCTION, as_span(ident), NULL);
 
       if (sym->kind != SYM_FUNCTION || sym->val.node)
-        ERR_AT(location, "Redefinition of symbol '%S'", as_span(ident));
+        ERR_AT(&p->l, location, "Redefinition of symbol '%S'", as_span(ident));
 
       /// Parse the body, create the function, and update the symbol table.
       Nodes params = {0};
@@ -931,7 +906,7 @@ static Node *parse_decl_rest(Parser *p, string ident, loc location) {
       /// Create a symbol table entry.
       Symbol *sym = scope_find_or_add_symbol(curr_scope(p), SYM_FUNCTION, as_span(ident), true);
       if (sym->kind != SYM_FUNCTION || sym->val.node)
-        ERR_AT(location, "Redefinition of symbol '%S'", as_span(ident));
+        ERR_AT(&p->l, location, "Redefinition of symbol '%S'", as_span(ident));
 
       /// Create the function.
       Node *func = ast_make_function(p->ast, location, type, (Nodes){0}, NULL, as_span(ident));
@@ -950,12 +925,12 @@ static Node *parse_decl_rest(Parser *p, string ident, loc location) {
 
   /// Add the declaration to the current scope.
   if (!scope_add_symbol(curr_scope(p), SYM_VARIABLE, as_span(ident), decl))
-    ERR_AT(location, "Redefinition of symbol '%S'", ident);
+    ERR_AT(&p->l, location, "Redefinition of symbol '%S'", ident);
 
   /// A non-external declaration may have an initialiser.
-  if (p->tok.type == TK_EQ) {
-    if (is_ext) ERR("An \"ext\" declaration may not have an initialiser");
-    next_token(p);
+  if (p->l.tok.type == TK_EQ) {
+    if (is_ext) ERR(&p->l, "An \"ext\" declaration may not have an initialiser");
+    next_token(&p->l);
 
     /// Need to do this manually because the symbol that is the variable
     /// may appear in its initialiser, albeit only in unevaluated contexts.
@@ -973,19 +948,19 @@ static Node *parse_decl_rest(Parser *p, string ident, loc location) {
 /// <expr-primary> ::= NUMBER | IDENTIFIER
 static Node *parse_ident_expr(Parser *p) {
   /// We know that we’re looking at an identifier; save it for later.
-  string ident = string_dup(p->tok.text);
-  loc location = p->tok.source_location;
-  next_token(p);
+  string ident = string_dup(p->l.tok.text);
+  loc location = p->l.tok.source_location;
+  next_token(&p->l);
 
   /// If the next token is a colon, then this is some sort of declaration.
-  if (p->tok.type == TK_COLON) {
+  if (p->l.tok.type == TK_COLON) {
     /// Parse the rest of the declaration.
-    next_token(p);
+    next_token(&p->l);
     Node *decl = parse_decl_rest(p, ident, location);
     free(ident.data);
     return decl;
-  } else if (p->tok.type == TK_COLON_GT) {
-    next_token(p);
+  } else if (p->l.tok.type == TK_COLON_GT) {
+    next_token(&p->l);
 
     /// Parse the type.
     Type *type = parse_type(p);
@@ -1001,7 +976,7 @@ static Node *parse_ident_expr(Parser *p) {
     }
     free(ident.data);
     TODO("Named type alias not implemented");
-  } else if (p->tok.type == TK_COLON_COLON) {
+  } else if (p->l.tok.type == TK_COLON_COLON) {
     /// Create the declaration.
     Node *decl = ast_make_declaration(p->ast, location, NULL, as_span(ident), NULL);
 
@@ -1010,10 +985,10 @@ static Node *parse_ident_expr(Parser *p) {
 
     /// Add the declaration to the current scope.
     if (!scope_add_symbol(curr_scope(p), SYM_VARIABLE, as_span(ident), decl))
-      ERR_AT(location, "Redefinition of symbol '%S'", ident);
+      ERR_AT(&p->l, location, "Redefinition of symbol '%S'", ident);
 
     /// A type-inferred declaration MUST have an initialiser.
-    next_token(p);
+    next_token(&p->l);
 
     /// Need to do this manually because the symbol that is the variable
     /// may appear in its initialiser, albeit only in unevaluated contexts.
@@ -1076,31 +1051,31 @@ static Node *parse_expr_with_precedence(Parser *p, isz current_precedence) {
   Node *lhs = NULL;
 
   /// Parse the LHS.
-  switch (p->tok.type) {
-    default: ERR("Expected expression, got %s", token_type_to_string(p->tok.type));
+  switch (p->l.tok.type) {
+    default: ERR(&p->l, "Expected expression, got %s", token_type_to_string(p->l.tok.type));
 
     /// An identifier can either be a declaration, function call, or cast.
     case TK_IDENT: lhs = parse_ident_expr(p); break;
     case TK_IF: lhs = parse_if_expr(p); break;
-    case TK_ELSE: ERR("'else' without 'if'");
+    case TK_ELSE: ERR(&p->l, "'else' without 'if'");
     case TK_WHILE: lhs = parse_while_expr(p); break;
     case TK_LBRACE: lhs = parse_block(p, true); break;
     case TK_NUMBER:
-      lhs = ast_make_integer_literal(p->ast, p->tok.source_location, p->tok.integer);
-      next_token(p);
+      lhs = ast_make_integer_literal(p->ast, p->l.tok.source_location, p->l.tok.integer);
+      next_token(&p->l);
       break;
     case TK_STRING:
-      lhs = ast_make_string_literal(p->ast, p->tok.source_location, as_span(p->tok.text));
-      next_token(p);
+      lhs = ast_make_string_literal(p->ast, p->l.tok.source_location, as_span(p->l.tok.text));
+      next_token(&p->l);
       break;
     case TK_LPAREN:
-      next_token(p);
+      next_token(&p->l);
       lhs = parse_expr(p);
       consume(p, TK_RPAREN);
       break;
-    case TK_RPAREN: ERR("Unmatched ')'");
-    case TK_RBRACK: ERR("Unmatched ']'");
-    case TK_RBRACE: ERR("Unmatched '}'");
+    case TK_RPAREN: ERR(&p->l, "Unmatched ')'");
+    case TK_RBRACK: ERR(&p->l, "Unmatched ']'");
+    case TK_RBRACE: ERR(&p->l, "Unmatched '}'");
 
     /// '@' is complicated because it can either be a dereference or a cast.
     case TK_AT: {
@@ -1108,17 +1083,17 @@ static Node *parse_expr_with_precedence(Parser *p, isz current_precedence) {
       usz at_count = 0;
       do {
         at_count++;
-        next_token(p);
-      } while (p->tok.type == TK_AT);
+        next_token(&p->l);
+      } while (p->l.tok.type == TK_AT);
 
       /// If the next token can be the start of a <type-base>, then this is
       /// a type; parse the type and wrap it in a pointer type.
-      if (p->tok.type == TK_IDENT) {
-        Symbol *sym = scope_find_symbol(curr_scope(p), as_span(p->tok.text), false);
+      if (p->l.tok.type == TK_IDENT) {
+        Symbol *sym = scope_find_symbol(curr_scope(p), as_span(p->l.tok.text), false);
         if (sym && sym->kind == SYM_TYPE) {
-          Type *type = ast_make_type_named(p->ast, p->tok.source_location, sym);
-          next_token(p);
-          while (at_count--) type = ast_make_type_pointer(p->ast, p->tok.source_location, parse_type_derived(p, type));
+          Type *type = ast_make_type_named(p->ast, p->l.tok.source_location, sym);
+          next_token(&p->l);
+          while (at_count--) type = ast_make_type_pointer(p->ast, p->l.tok.source_location, parse_type_derived(p, type));
           lhs = parse_type_expr(p, type);
           break;
         }
@@ -1140,9 +1115,9 @@ static Node *parse_expr_with_precedence(Parser *p, isz current_precedence) {
     case TK_TILDE:
     case TK_EXCLAM:
     case TK_STAR: {
-      u32 start = p->tok.source_location.start;
-      enum TokenType tt = p->tok.type;
-      next_token(p);
+      u32 start = p->l.tok.source_location.start;
+      enum TokenType tt = p->l.tok.type;
+      next_token(&p->l);
       Node *operand = parse_expr_with_precedence(p, PREFIX_PRECEDENCE);
       lhs = ast_make_unary(p->ast, (loc){.start = start, .end = operand->source_location.end}, tt, false, operand);
     } break;
@@ -1166,21 +1141,21 @@ static Node *parse_expr_with_precedence(Parser *p, isz current_precedence) {
   for (;;) {
     /// TODO: Postfix operators also need to respect precedence.
     /// Handle unary postfix operators.
-    if (is_postfix_operator(p->tok.type)) {
-      lhs = ast_make_unary(p->ast, (loc){.start = lhs->source_location.start, p->tok.source_location.end}, p->tok.type, true, lhs);
-      next_token(p);
+    if (is_postfix_operator(p->l.tok.type)) {
+      lhs = ast_make_unary(p->ast, (loc){.start = lhs->source_location.start, p->l.tok.source_location.end}, p->l.tok.type, true, lhs);
+      next_token(&p->l);
       continue;
     }
 
     /// Handle calls.
-    if (p->tok.type == TK_LPAREN) {
+    if (p->l.tok.type == TK_LPAREN) {
       lhs = parse_call_expr(p, lhs);
       continue;
     }
 
     /// Handle subscripts.
-    if (p->tok.type == TK_LBRACK) {
-      next_token(p);
+    if (p->l.tok.type == TK_LBRACK) {
+      next_token(&p->l);
       Node *index = parse_expr(p);
       consume(p, TK_RBRACK);
       lhs = ast_make_binary(p->ast, (loc){.start = lhs->source_location.start, .end = index->source_location.end}, TK_LBRACK, lhs, index);
@@ -1190,18 +1165,18 @@ static Node *parse_expr_with_precedence(Parser *p, isz current_precedence) {
     /// Handle binary operators. We can just check if the precedence of the current
     /// token is less than the current precedence, even if the current token is not
     /// an operator because `binary_operator_precedence` returns -1 in that case.
-    isz prec = binary_operator_precedence(p, p->tok);
+    isz prec = binary_operator_precedence(p, p->l.tok);
 
     /// If the precedence of the current token is less than the current precedence,
     /// then we're done.
     if (prec < current_precedence) return lhs;
 
     /// If the precedence is the same, we’re done if the token is left-associative.
-    if (prec == current_precedence && !is_right_associative(p, p->tok)) return lhs;
+    if (prec == current_precedence && !is_right_associative(p, p->l.tok)) return lhs;
 
     /// Otherwise, we need to parse the RHS.
-    enum TokenType tt = p->tok.type;
-    next_token(p);
+    enum TokenType tt = p->l.tok.type;
+    next_token(&p->l);
 
     /// The `as` operator is special because its RHS is a type.
     if (tt == TK_AS) {
@@ -1212,10 +1187,10 @@ static Node *parse_expr_with_precedence(Parser *p, isz current_precedence) {
 
     /// The `as` operator is special because its RHS is a type.
     if (tt == TK_DOT) {
-      if (p->tok.type != TK_IDENT) ERR("RHS of operator '.' must be an identifier.");
-      lhs = ast_make_member_access(p->ast, (loc){.start = lhs->source_location.start, .end = p->tok.source_location.end}, as_span(p->tok.text), lhs);
+      if (p->l.tok.type != TK_IDENT) ERR(&p->l, "RHS of operator '.' must be an identifier.");
+      lhs = ast_make_member_access(p->ast, (loc){.start = lhs->source_location.start, .end = p->l.tok.source_location.end}, as_span(p->l.tok.text), lhs);
       // Yeet identifier token
-      next_token(p);
+      next_token(&p->l);
       continue;
     }
 
@@ -1234,28 +1209,28 @@ static Node *parse_expr_with_precedence(Parser *p, isz current_precedence) {
 /// ===========================================================================
 AST *parse(span source, const char *filename) {
   Parser p = {0};
-  p.source = source;
-  p.filename = filename;
-  p.curr = source.data;
-  p.end = source.data + source.size - 1;
-  p.lastc = ' ';
+  p.l.source = source;
+  p.l.filename = filename;
+  p.l.curr = source.data;
+  p.l.end = source.data + source.size - 1;
+  p.l.lastc = ' ';
   p.ast = ast_create();
   p.ast->filename = string_create(filename);
   p.ast->source = string_dup(source);
 
   /// Set up error handling.
-  if (setjmp(p.error_buffer)) {
+  if (setjmp(p.l.error_buffer)) {
     ast_free(p.ast);
     return NULL;
   }
 
   /// Lex the first character and token.
-  next_char(&p);
-  next_token(&p);
+  next_char(&p.l);
+  next_token(&p.l);
 
   /// Parse the file.
   /// <file> ::= { <expression> }
-  while (p.tok.type != TK_EOF) {
+  while (p.l.tok.type != TK_EOF) {
     Node *expr = parse_expr(&p);
     vector_push(p.ast->root->root.children, expr);
     expr->parent = p.ast->root;
