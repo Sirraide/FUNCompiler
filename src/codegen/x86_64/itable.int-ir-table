@@ -1,0 +1,340 @@
+/// GENERAL INVARIANTS:
+///  - The first pattern that matches is picked.
+///  - A multi-instruction patterns matches only
+///    if the values that the instructions they
+///    are made up of return are only used within
+///    that pattern; the `shared` keyword can be
+///    used to mark that an instruction w/ more than
+///    one use may be used in the pattern. The last
+///    instruction in a pattern is implicitly `shared`.
+///  - The `result` variable can be used to allocate
+///    a new register for a value.
+///  - An `out` clause can be used to indicate that
+///    an operation overwrites a register. As a special
+///    case, `out any` can be used to let the RA pick
+///    one of the operands to be overwritten; this
+///    operand can be referenced an `emit` clause
+///    using the `out` keyword, in which case `o*`
+///    refers to all other `o` operands.
+///  - Address encoding of operands:
+///        - `r` -> register
+///        - `i` -> immediate
+///        - `m` -> register + immediate
+///        - `n` -> name operand
+///  - The destination operand always comes first,
+///    then the source.
+
+/// =============================================
+///  Immediate.
+/// =============================================
+/// Immediate+register add.
+match i1, i2
+  where i1 is IR_IMMEDIATE
+    with o1 imm lt 32max
+  where i2 is IR_ADD
+    with commutative i1, o2 reg
+out o2
+emit ADDri o2, o1 .
+  
+/// Fallback pattern: match any immediate.
+match i1
+  where i1 is IR_IMMEDIATE
+    with o1 imm any
+emit MOVri result, o1 .
+
+/// =============================================
+///  Call.
+/// =============================================
+macro #call_attrs expands
+  ifplatform "sysv"
+    clobber %rax, %rcx, %rdx, %r8, %r9, %r10, %r11, %rsi, %rdi
+  else
+    clobber %rax, %rcx, %rdx, %r8, %r9, %r10, %r11
+  endif
+  out %rax
+endmacro
+  
+/// Indirect Call.
+match i1
+  where i1 IR_CALL
+    with o1 reg, o* reg
+#call_attrs
+emit ALIGNSTACK 16
+emit CALLi o1, o* 
+emit UNALIGNSTACK 16 .
+
+/// Direct call.
+match i1
+  where i1 IR_CALL
+    with o1 name, o* reg
+#call_attrs
+emit ALIGNSTACK 16
+emit CALLd o1, o*
+emit UNALIGNSTACK 16 .
+
+undef #call_attrs
+
+/// =============================================
+///  Load.
+/// =============================================
+/// Pointer load.
+match i1
+  where i1 IR_LOAD
+    with o1 reg
+emit MOVrm result, o1, 0 .
+
+/// =============================================
+///  Return.
+/// =============================================   
+match i1
+  where i1 IR_RETURN
+    with o1 reg
+emit MOVrr %rax, o1
+
+/// This may not actually emit a ‘ret’ instruction
+/// and instead branch to the function’s return
+/// block.
+///
+/// TODO: Emit prologues/epilogues before ISel?.  
+emit RET .
+
+/// =============================================
+///  Branch.
+/// =============================================
+/// Direct branch  
+match i1
+  where i1 IR_BRANCH
+    with o1 block
+emit JMPd o1 .
+
+/// =============================================
+///  Conditional branch.
+/// =============================================
+match i1
+  where i1 IR_BRANCH_CONDITIONAL
+    with o1 reg, o2 block, o3 block
+emit JNZ o1, o2
+emit JMPd o3 .
+
+/// =============================================
+///  Unreachable.
+/// =============================================
+match i1 where i1 IR_UNREACHABLE emit UD2 .
+
+/// =============================================
+///  Copy.
+/// =============================================
+match i1
+  where i1 IR_COPY
+    with o1 reg
+emit MOVrr result, o1 .
+
+/// =============================================
+///  Add.
+/// =============================================
+/// Three-address add.
+match i1, i2
+  where i1 IR_ADD
+    with o1 reg, o2 reg
+  where i2 IR_ADD
+    with commutative i1, o3 reg
+out any
+emit LEArrr out, o* .
+
+macro #two_addr_out_any #1, #2 expands
+  match i1
+    where i1 #1
+      with o1 reg, o2 reg
+  out any
+  emit #concat(#2, rr) out, o* .
+endmacro
+
+/// Two-address add, overwriting the result.  
+#two_addr_out_any IR_ADD, ADD
+
+/// =============================================
+///  Sub.
+/// =============================================
+/// Two-address sub.
+match i1
+  where i1 IR_SUB
+    with o1 reg, o2 reg
+out o1
+emit SUBrr o1, o2 .
+
+/// =============================================
+///  Mul.
+/// =============================================
+#two_addr_out_any IR_MUL, MUL
+
+/// =============================================
+///  Div/mod.
+/// =============================================
+macro #divmod #1, #2, #3 expands
+  /// This one is rather horrible...
+  match i1
+    where i1 #1
+      with o1 reg, o2 reg ne %rax | %rdx
+  clobber #3
+  out #2
+  emit MOVrr %rax, o1
+  emit CQO
+  emit IDIV o2 .
+endmacro
+
+#divmod IR_DIV, %rdx, %rax
+#divmod IR_MOD, %rax, %rdx
+
+undef #divmod
+
+/// =============================================
+///  SHL/SAR/SHR
+/// =============================================
+for SHL, SAR, SHR do
+  match i1
+    where i1 #concat(IR_, #)
+      with o1 reg, o2 reg
+  out o1
+  clobber %rcx
+  emit MOVrr %rcx, o2
+  emit #concat(#, rr) o1 .
+endfor
+
+/// =============================================
+///  And/Or.
+/// =============================================
+#two_addr_out_any IR_AND, AND
+#two_addr_out_any IR_OR, OR
+  
+/// =============================================
+///  LT/LE/GT/GE/EQ/NE
+/// =============================================
+for LT, LE, GT, GE, EQ, NE do
+  /// Comparison followed by jump.
+  match i1, i2
+    where i1 #concat(IR_, #)
+      with o1 reg, o2 reg
+    where i2 IR_BRANCH_CONDITIONAL
+      with i1, o3 block, o4 block
+  emit CMPrr o2, o1
+  emit #concat(J, #) o3
+  emit JMPd o4 .
+  
+  /// Simple comparison
+  match i1
+    where i1 #concat(IR_, #1)
+      with o1 reg, o2 reg
+  out any
+  emit CMPrr o2, o1
+  emit MOVri, out, 0
+  emit #concat(SET, #1) out .
+endfor
+
+/// =============================================
+///  Static reference.
+/// =============================================
+/// Load the value.
+match i1, i2
+  where i1 IR_STATIC_REF
+    with o1 name
+  where i2 IR_LOAD
+    with i1
+emit MOVrn result, o1 .
+
+/// Store a value.
+match i1, i2
+  where i1 IR_STATIC_REF
+    with o1 name
+  where i2 IR_STORE
+    with i1, o2 reg
+emit STOREnr o1, o2 .
+    
+/// Load the address.
+match i1
+  where i1 IR_STATIC_REF
+    with o1 name
+emit LEArn result, o1 .
+
+/// =============================================
+///  Function reference.
+/// =============================================
+/// Call the function.
+match i1, i2
+  where i1 IR_FUNC_REF
+    with o1 name
+  where i1 IR_CALL
+    with i1, o* reg
+emit CALLd o1, o* .
+
+/// Load the function address.
+match i1
+  where i1 IR_FUNC_REF
+    with o1 name
+emit LEArn result, o1 .
+
+/// =============================================
+///  Store.
+/// =============================================
+/// For a store followed by a load, we replace the
+/// load w/ the stored value.
+match i1, i2
+  where i1 IR_STORE
+    with o1 any, o2 reg
+  where i2 IR_LOAD
+    with o3 eq o1
+emit i1
+emit MOVrr result, o2 .
+
+/// Store to static var.
+match i1
+  where i1 IR_STORE
+    with o1 name, o2 reg
+emit MOVnr o1, o2 .
+
+/// Indirect store.
+match i1
+  where i1 IR_STORE
+    with o1 reg, o2 reg
+emit MOVmr o1, 0, o2 .
+  
+/// Indirect store with offset.
+match i1
+  where i1 IR_STORE
+    with o1 reg, o2 imm, o3 reg
+emit MOVmr o1, o2, o3 .
+
+/// =============================================
+///  Not.
+/// =============================================
+match i1
+  where i1 IR_NOT
+    with o1 reg
+out o1
+emit NOTr o1 .
+
+/// =============================================
+///  Allocas are basically just LEAs here.
+/// =============================================
+match i1
+  where i1 IR_ALLOCA
+    with o1 imm
+emit LEArm result, %rbp, o1 .  
+
+/// =============================================
+///  NOPs.
+/// =============================================
+for
+  IR_REGISTER,
+  IR_LIT_INTEGER,
+  IR_LIT_STRING,
+do
+  match i1 where i1 # discard .
+endfor
+
+/// =============================================
+///  These need to be handled beforehand.
+/// =============================================
+for IR_PHI, IR_PARAMETER do
+  match i1 where i1 #
+    #error("ISel cannot handle PHIs. Lower them beforehand.")
+endfor

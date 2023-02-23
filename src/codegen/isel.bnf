@@ -1,0 +1,50 @@
+/// This grammar is a bit weird in that there are basically
+/// two grammars: one that actually defines rules, and one
+/// that executes at parse time to generate rules.
+
+<file> ::= { <rule> | <directive> }
+
+/// ===========================================================================
+///  Rule grammar.
+/// ===========================================================================
+<rule> ::= MATCH INAME { "," INAME } { <filter> } { <side-effect> } <result> { <result> } "."
+
+/// Filters.
+<filter> ::= WHERE INAME [ IS INSTRUCTION ] [ <with-clause> ]
+<with-clause> ::= WITH [ COMMUTATIVE ] [ <operand> { "," <operand> } ]
+<operand> ::= INAME | ONAME [ <type> ] [ <constraint> ]
+<type> ::= REG | IMM | NAME | BLOCK
+<constraint> ::= ANY | ( EQ | NE | LT | GT | LE | GE ) <value> { "|" <value> }
+<value> ::= REGISTER | NUMBER | ONAME | INAME
+
+/// Side effects.
+<side-effect> ::= { <clobber> | <out> }
+<clobber> ::= CLOBBER REGISTER { "," REGISTER }
+<out> ::= OUT ( REGISTER | ONAME | ANY )
+
+/// Results.
+<result> ::= <emit> | DISCARD
+<emit> ::= EMIT INSTRUCTION [ <emit-operand> { "," <emit-operand> } ]
+<emit-operand> ::= ONAME | INAME | RESULT | NUMBER | REGISTER
+
+/// ===========================================================================
+///  Directives grammar.
+/// ===========================================================================
+<directive> ::= <loop> | <macrodef> | <macroundef> | <macrocall>
+
+<loop> ::= FOR TOKEN { "," TOKEN } DO { TOKEN } ENDFOR
+<macrodef> ::= MACRO MACRONAME MACROPARAM { "," MACROPARAM } EXPANDS { TOKEN } ENDMACRO
+<macroundef> ::= UNDEF MACRONAME
+<macrocall> ::= MACRONAME [ "(" ] MACROPARAM { "," MACROPARAM } [ ")" ]
+
+
+
+
+
+
+
+
+
+
+
+
