@@ -2,6 +2,7 @@
 #define CODEGEN_FORWARD_H
 
 typedef struct IRInstruction IRInstruction;
+typedef struct MachineInst MachineInst;
 typedef struct IRBlock IRBlock;
 typedef struct IRFunction IRFunction;
 typedef struct IR IR;
