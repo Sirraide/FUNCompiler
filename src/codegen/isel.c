@@ -479,14 +479,24 @@ usz intern_register(Parser *p, span regname) {
   return (usz)(reg - p->table->register_names.data);
 }
 
+/// Intern an instruction string.
+usz intern_instruction(Parser *p, span instname) {
+  string* inst = 0;
+  vector_find_if(p->table->instruction_names, inst, i, string_eq(p->table->instruction_names.data[i], instname));
+
+  /// Instruction not found, add it.
+  if (!inst) {
+    vector_push(p->table->instruction_names, string_dup(instname));
+    return p->table->instruction_names.size - 1;
+  }
+
+  /// Instruction found, return its index.
+  return (usz)(inst - p->table->instruction_names.data);
+}
+
 /// Parse a filter.
 ///
 /// <filter> ::= WHERE INAME [ INSTRUCTION ] [ <with-clause> ]
-/// <with-clause> ::= WITH [ COMMUTATIVE ] [ <operand> { "," <operand> } ]
-/// <operand> ::= INAME | ONAME [ <type> ] [ <constraint> ]
-/// <type> ::= REG | IMM | NAME | BLOCK | ANY
-/// <constraint> ::= ANY | ( EQ | NE | LT | GT | LE | GE ) <value> { "|" <value> }
-/// <value> ::= REGISTER | NUMBER | ONAME | INAME
 ISelFilter parse_filter(Parser *p, usz *ocount) {
   consume(p, TK_ISEL_WHERE);
   ISelFilter filter = {0};
@@ -498,11 +508,12 @@ ISelFilter parse_filter(Parser *p, usz *ocount) {
 
   /// Parse the instruction type.
   if (at(p, TK_ISEL_INSTRUCTION)) {
-    filter.instruction = string_dup(p->l.tok.text);
+    filter.instruction = intern_instruction(p, as_span(p->l.tok.text));
     next_token(p);
   }
 
   /// Parse the with clause.
+  /// <with-clause> ::= WITH [ COMMUTATIVE ] [ <operand> { "," <operand> } ]
   if (!at(p, TK_ISEL_WITH)) return filter;
   next_token(p);
 
@@ -513,6 +524,7 @@ ISelFilter parse_filter(Parser *p, usz *ocount) {
   }
 
   /// Operands.
+  /// <operand> ::= INAME | ONAME [ <type> ] [ <constraint> ]
   while (at(p, TK_ISEL_INAME) || at(p, TK_ISEL_ONAME) || at(p, TK_ISEL_OSTAR)) {
     ISelFilterOperand op = {0};
 
@@ -534,10 +546,11 @@ ISelFilter parse_filter(Parser *p, usz *ocount) {
       /// A non-rest operand must have the expected OName.
       if (op.kind != ISEL_FILTER_OPERAND_REST) {
         op.name = ++*ocount;
-        if (p->l.tok.integer != *ocount) ERR(p, "Expected OName o'%d', got o'%d'", *ocount, op.oname);
+        if (p->l.tok.integer != *ocount) ERR(p, "Expected OName o'%d', got o'%d'", *ocount, op.name);
       }
 
       /// Parse the type. Defaults to any.
+      /// <type> ::= REG | IMM | NAME | BLOCK | ANY
       if (at(p, TK_ISEL_REG)) {
         op.type = ISEL_FILTER_OPERAND_TYPE_REG;
         next_token(p);
@@ -558,6 +571,7 @@ ISelFilter parse_filter(Parser *p, usz *ocount) {
       }
 
       /// Parse the operand constraint if there is one. It must match the type.
+      /// <constraint> ::= ANY | ( EQ | NE | LT | GT | LE | GE ) <value> { "|" <value> }
       if (at(p, TK_ISEL_ANY)) {
         op.constraint = ISEL_CONSTRAINT_ANY;
         next_token(p);
@@ -584,6 +598,7 @@ ISelFilter parse_filter(Parser *p, usz *ocount) {
       }
 
       /// Non-any constraints have operands.
+      /// <value> ::= REGISTER | NUMBER | ONAME | INAME
       for (; op.constraint != ISEL_CONSTRAINT_ANY ;) {
         ISelConstraintParameter param =  {0};
         if (at(p, TK_ISEL_REGISTER)) {
@@ -623,12 +638,17 @@ ISelFilter parse_filter(Parser *p, usz *ocount) {
   return filter;
 }
 
+/// Add a pattern to the table.
+void add_pattern(Parser *p, ISelPattern pat) {
+}
+
 /// Parse a rule.
 /// <rule> ::= MATCH INAME { "," INAME } { <filter> } { <side-effect> } <result> { <result> } "."
 void parse_rule(Parser *p) {
   /// Yeet "match".
   consume(p, TK_ISEL_MATCH);
   next_token(p);
+  ISelPattern pat = {0};
 
   /// Parse the instructions.
   u64 icount = 0;
@@ -641,36 +661,96 @@ void parse_rule(Parser *p) {
   }
 
   /// Parse the filters.
-  ISelFilters f = {0};
   u64 ocount = 0;
   while (at(p, TK_ISEL_WHERE))
-    vector_push(f, parse_filter(p, &ocount));
+    vector_push(pat.filters, parse_filter(p, &ocount));
 
   /// Parse the side effects.
-  ISelClobbers c = {0};
-  ISelOutClause o = {0};
-  bool have_out_clause = false;
+  /// <side-effect> ::= { <clobber> | <out> }
   while (at(p, TK_ISEL_CLOBBER) || at(p, TK_ISEL_OUT)) {
-    if (at(p, TK_ISEL_CLOBBER)) vector_push(s, parse_side_effect(p));
-    else {
-      if (have_out_clause) ERR(p, "Pattern cannot have more than one 'out' clause.");
-      have_out_clause = true;
-      o = parse_out_clause(p);
+    /// <clobber> ::= CLOBBER REGISTER { "," REGISTER }
+    while (at(p, TK_ISEL_CLOBBER)) {
+      next_token(p);
+      if (!at(p, TK_ISEL_REGISTER)) ERR(p, "Expected register name");
+      vector_push(pat.clobbers, p->l.tok.integer);
+      next_token(p);
+
+      if (at(p, TK_COMMA)) next_token(p);
+      else break;
+    }
+
+    /// <out> ::= OUT ( REGISTER | ONAME | ANY )
+    if (at(p, TK_ISEL_OUT)) {
+      if (pat.result_kind != ISEL_RESULT_NONE) ERR(p, "Multiple out clauses");
+      next_token(p);
+
+      if (at(p, TK_ISEL_REGISTER)) {
+        pat.result_kind = ISEL_RESULT_REGISTER;
+        pat.result = intern_register(p, as_span(p->l.tok.text));
+      } else if (at(p, TK_ISEL_ONAME)) {
+        pat.result_kind = ISEL_RESULT_ONAME;
+        pat.result = p->l.tok.integer;
+      } else if (at(p, TK_ISEL_ANY)) {
+        pat.result_kind = ISEL_RESULT_ANY;
+      } else {
+        ERR(p, "Expected register, oname, or 'any'");
+      }
+      next_token(p);
     }
   }
 
   /// Parse the results.
-  ISelEmits e = {0};
+  /// <result> ::= <emit> | DISCARD
   do {
-    if (at (p, TK_ISEL_DISCARD) && e.size) ERR(p, "'discard' must be the sole result of a pattern.");
-    vector_push(e, parse_result(p));
+    /// Discard clause. Nothing may follow this.
+    if (at (p, TK_ISEL_DISCARD)) {
+      if (pat.emits.size) ERR(p, "'discard' must be the sole result of a pattern.");
+      break;
+    }
+
+    /// <emit> ::= EMIT INSTRUCTION [ <emit-operand> { "," <emit-operand> } ]
+    next_token(p);
+    if (!at(p, TK_ISEL_INSTRUCTION)) ERR(p, "Expected instruction name");
+    ISelEmit em = {0};
+    em.instruction = intern_instruction(p, as_span(p->l.tok.text));
+    next_token(p);
+
+    /// <emit-operand> ::= ONAME | INAME | RESULT | NUMBER | REGISTER
+    if (at(p, TK_ISEL_ONAME) || at(p, TK_ISEL_INAME) || at(p, TK_ISEL_RESULT) || at(p, TK_ISEL_NUMBER) || at(p, TK_ISEL_REGISTER)) {
+      for (;;) {
+        ISelEmitOperand op = {0};
+
+        if (at(p, TK_ISEL_ONAME)) {
+          op.kind = ISEL_PARAMETER_ONAME;
+          op.value = p->l.tok.integer;
+        } else if (at(p, TK_ISEL_INAME)) {
+          op.kind = ISEL_PARAMETER_INAME;
+          op.value = p->l.tok.integer;
+        } else if (at(p, TK_ISEL_RESULT)) {
+          op.kind = ISEL_PARAMETER_RESULT;
+        } else if (at(p, TK_ISEL_NUMBER)) {
+          op.kind = ISEL_PARAMETER_IMMEDIATE;
+          op.value = p->l.tok.integer;
+        } else if (at(p, TK_ISEL_REGISTER)) {
+          op.kind = ISEL_PARAMETER_REGISTER;
+          op.value = intern_register(p, as_span(p->l.tok.text));
+        } else {
+          ERR(p, "Expected emit operand");
+        }
+
+        next_token(p);
+        vector_push(em.operands, op);
+        if (at(p, TK_COMMA)) next_token(p);
+        else break;
+      }
+    }
   } while (at(p, TK_ISEL_EMIT) || at(p, TK_ISEL_DISCARD));
 
   /// Yeet the dot.
   consume(p, TK_DOT);
 
   /// Add the rule.
-  add_rule(p->table, icount, f, c, o, e);
+  add_pattern(p, pat);
 }
 
 /// Parser entry point.

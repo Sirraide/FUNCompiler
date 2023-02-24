@@ -4,6 +4,8 @@
 #include <codegen/codegen_forward.h>
 #include <codegen/intermediate_representation.h>
 
+typedef usz ISelIOName, ISelIName, ISelOName, ISelRegister;
+
 enum ISelFilterOperandKind {
   ISEL_FILTER_OPERAND_INAME, ///< Reference to previous instruction.
   ISEL_FILTER_OPERAND_ONAME, ///< Reference to operand of instructions.
@@ -33,6 +35,17 @@ enum ISelParameterKind {
   ISEL_PARAMETER_IMMEDIATE,
   ISEL_PARAMETER_INAME,
   ISEL_PARAMETER_ONAME,
+
+  /// Only used for emit operands.
+  ISEL_PARAMETER_RESULT,
+};
+
+enum ISelResultKind {
+  ISEL_RESULT_NONE,
+  ISEL_RESULT_ALLOC,
+  ISEL_RESULT_REGISTER,
+  ISEL_RESULT_ONAME,
+  ISEL_RESULT_ANY
 };
 
 typedef struct ISelConstraintParameter {
@@ -44,38 +57,45 @@ typedef struct ISelFilterOperand {
   enum ISelFilterOperandKind kind;
   enum ISelFilterOperandType type;
   enum ISelConstraintKind constraint;
-  usz name; ///< iname or oname.
+  ISelIOName name; ///< iname or oname.
   Vector(ISelConstraintParameter) constraint_parameters;
 } ISelFilterOperand;
 
 typedef struct ISelFilter {
-  usz iname;
-  string instruction;
-  bool commutative;
+  ISelIName iname;
+  usz instruction;
   Vector(ISelFilterOperand) operands;
+  bool commutative;
 } ISelFilter;
 
-typedef struct ISelClobber {
-
-} ISelClobber;
+typedef struct ISelEmitOperand {
+  enum ISelParameterKind kind;
+  usz value;
+} ISelEmitOperand;
 
 typedef struct ISelEmit {
-
+  usz instruction;
+  Vector(ISelEmitOperand) operands;
 } ISelEmit;
 
 typedef Vector(ISelFilter) ISelFilters;
-typedef Vector(ISelClobber) ISelClobbers;
+
 typedef Vector(ISelEmit) ISelEmits;
 
 typedef struct ISelPattern {
   usz icount;
+
+  enum ISelResultKind result_kind;
+  ISelRegister result;
+
   ISelFilters filters;
-  ISelClobbers clobbers;
   ISelEmits emits;
+  Vector(ISelRegister) clobbers;
 } ISelPattern;
 
 typedef struct ISelTable {
   Vector(ISelPattern) patterns;
+  Vector(string) instruction_names;
   Vector(string) register_names;
 } ISelTable;
 
