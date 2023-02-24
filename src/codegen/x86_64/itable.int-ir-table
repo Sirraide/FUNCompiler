@@ -29,16 +29,16 @@
 /// =============================================
 /// Immediate+register add.
 match i1, i2
-  where i1 is IR_IMMEDIATE
+  where i1 IR_IMMEDIATE
     with o1 imm lt 32max
-  where i2 is IR_ADD
+  where i2 IR_ADD
     with commutative i1, o2 reg
 out o2
 emit ADDri o2, o1 .
   
 /// Fallback pattern: match any immediate.
 match i1
-  where i1 is IR_IMMEDIATE
+  where i1 IR_IMMEDIATE
     with o1 imm any
 emit MOVri result, o1 .
 

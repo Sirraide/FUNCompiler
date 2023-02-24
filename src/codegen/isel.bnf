@@ -10,7 +10,7 @@
 <rule> ::= MATCH INAME { "," INAME } { <filter> } { <side-effect> } <result> { <result> } "."
 
 /// Filters.
-<filter> ::= WHERE INAME [ IS INSTRUCTION ] [ <with-clause> ]
+<filter> ::= WHERE INAME [ INSTRUCTION ] [ <with-clause> ]
 <with-clause> ::= WITH [ COMMUTATIVE ] [ <operand> { "," <operand> } ]
 <operand> ::= INAME | ONAME [ <type> ] [ <constraint> ]
 <type> ::= REG | IMM | NAME | BLOCK

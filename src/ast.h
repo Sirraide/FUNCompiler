@@ -93,6 +93,46 @@ enum TokenType {
   TK_COLON_EQ,
   TK_COLON_COLON,
   TK_COLON_GT,
+
+  /// Only used by the instruction table parser.
+  TK_ISEL_INAME,
+  TK_ISEL_ONAME,
+  TK_ISEL_OSTAR,
+  TK_ISEL_INSTRUCTION,
+  TK_ISEL_REGISTER,
+  TK_ISEL_NUMBER,
+
+  TK_ISEL_MATCH,
+  TK_ISEL_WHERE,
+  TK_ISEL_WITH,
+  TK_ISEL_COMMUTATIVE,
+  TK_ISEL_REG,
+  TK_ISEL_IMM,
+  TK_ISEL_NAME,
+  TK_ISEL_BLOCK,
+  TK_ISEL_RESULT,
+  TK_ISEL_CLOBBER,
+  TK_ISEL_OUT,
+  TK_ISEL_IS,
+  TK_ISEL_EQ,
+  TK_ISEL_NE,
+  TK_ISEL_LT,
+  TK_ISEL_GT,
+  TK_ISEL_LE,
+  TK_ISEL_GE,
+  TK_ISEL_DISCARD,
+  TK_ISEL_ANY,
+  TK_ISEL_EMIT,
+  TK_ISEL_MACRO,
+  TK_ISEL_UNDEF,
+  TK_ISEL_EXPANDS,
+  TK_ISEL_ENDMACRO,
+  TK_ISEL_FOR,
+  TK_ISEL_DO,
+  TK_ISEL_ENDFOR,
+
+  /// Only emitted in raw mode.
+  TK_ISEL_MACRONAME,
 };
 
 /// The type of a symbol in the symbol table.

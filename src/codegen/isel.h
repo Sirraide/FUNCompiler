@@ -4,119 +4,80 @@
 #include <codegen/codegen_forward.h>
 #include <codegen/intermediate_representation.h>
 
-enum ISelOperandConstraintKind {
-  /// Match any operand.
-  ISEL_OP_KIND_ANY,
-
-  /// Match a register.
-  ISEL_OP_KIND_REGISTER,
-
-  /// Match an immediate.
-  ISEL_OP_KIND_IMMEDIATE,
+enum ISelFilterOperandKind {
+  ISEL_FILTER_OPERAND_INAME, ///< Reference to previous instruction.
+  ISEL_FILTER_OPERAND_ONAME, ///< Reference to operand of instructions.
+  ISEL_FILTER_OPERAND_REST,  ///< Any remaining operands.
 };
 
-/// Constraint on an operand.
-typedef struct {
-  /// The kind of constraint.
-  enum ISelOperandConstraintKind kind;
+enum ISelFilterOperandType {
+  ISEL_FILTER_OPERAND_TYPE_ANY,
+  ISEL_FILTER_OPERAND_TYPE_REG,
+  ISEL_FILTER_OPERAND_TYPE_IMM,
+  ISEL_FILTER_OPERAND_TYPE_NAME,
+  ISEL_FILTER_OPERAND_TYPE_BLOCK,
+};
 
-  /// The constraint.
-  union {
-    struct {
-      /// Register class. Zero means any register class.
-      u32 rclass;
+enum ISelConstraintKind {
+  ISEL_CONSTRAINT_ANY,
+  ISEL_CONSTRAINT_EQ,
+  ISEL_CONSTRAINT_NE,
+  ISEL_CONSTRAINT_LT,
+  ISEL_CONSTRAINT_LE,
+  ISEL_CONSTRAINT_GT,
+  ISEL_CONSTRAINT_GE,
+};
 
-      /// Register. Zero means any register.
-      RegisterDescriptor rd;
-    } reg;
+enum ISelParameterKind {
+  ISEL_PARAMETER_REGISTER,
+  ISEL_PARAMETER_IMMEDIATE,
+  ISEL_PARAMETER_INAME,
+  ISEL_PARAMETER_ONAME,
+};
 
-    struct {
-      /// Range of allowed values.
-      i64 min;
-      i64 max;
+typedef struct ISelConstraintParameter {
+  enum ISelParameterKind kind;
+  usz value;
+} ISelConstraintParameter;
 
-      /// Allowed values. If this is NULL, use the range instead.
-      i64 allowed_values_count;
-      i64 *values;
-    } imm;
-  };
-} ISelOperandConstraint;
+typedef struct ISelFilterOperand {
+  enum ISelFilterOperandKind kind;
+  enum ISelFilterOperandType type;
+  enum ISelConstraintKind constraint;
+  usz name; ///< iname or oname.
+  Vector(ISelConstraintParameter) constraint_parameters;
+} ISelFilterOperand;
 
-/// Pattern entry. This is what matches a single instruction.
-typedef struct ISelPatternEntry {
-  /// The Machine Instruction type produced by this pattern.
-  u32 mir_type;
+typedef struct ISelFilter {
+  usz iname;
+  string instruction;
+  bool commutative;
+  Vector(ISelFilterOperand) operands;
+} ISelFilter;
 
-  /// Number of constraints.
-  u16 constraints_count;
+typedef struct ISelClobber {
 
-  /// Whether this pattern is commutative.
-  bool operands_commutative;
+} ISelClobber;
 
-  /// Number of operands to match.
-  ///
-  /// Note: If an instruction has more than 65535 operands,
-  /// then there’s something wrong with the architecture
-  /// in question candidly...
-  u16 min_operands;
-  u16 max_operands;
+typedef struct ISelEmit {
 
-  /// Operand patterns.
-  ISelOperandConstraint *constraints;
-} ISelPatternEntry;
+} ISelEmit;
 
-/// Instruction selection pattern. This matches
-/// a sequence of instructions.
+typedef Vector(ISelFilter) ISelFilters;
+typedef Vector(ISelClobber) ISelClobbers;
+typedef Vector(ISelEmit) ISelEmits;
+
 typedef struct ISelPattern {
-  /// Number of instructions in the pattern.
-  usz length;
-
-  /// The result register of this pattern. 0 means any register.
-  RegisterDescriptor result;
-
-  /// Whether this pattern is commutative wrt instructions.
-  bool instructions_commutative;
-
-  /// Pattern to jump to if this pattern doesn’t match;
-  /// NULL means reject. This is used so we don’t end
-  /// up matching the same instruction over and over again.
-  ///
-  /// For instance, if a pattern requires 2 instructions,
-  /// but only the first one matches, there might be another
-  /// pattern that we know matches the first instruction,
-  /// so we can jump to that pattern instead of just trying
-  /// to match the next one in the list.
-  ///
-  /// The first element is the pattern to jump to if only
-  /// the first instruction matches, the second element
-  /// is the pattern to jump to if the first two instructions
-  /// match.
-  struct ISelPattern *link[2];
-
-  /// Pattern entries.
-  ISelPatternEntry *entries;
+  usz icount;
+  ISelFilters filters;
+  ISelClobbers clobbers;
+  ISelEmits emits;
 } ISelPattern;
 
-/// Table for instruction selection.
-typedef struct ISelList {
-    /// Number of entries.
-    u32 count;
-
-    /// Index of the first pattern that matches 1 instruction.
-    u32 single;
-
-    /// Index of the first pattern that matches 2 instructions.
-    u32 double_;
-
-    /// Index of the first pattern that matches 3 instructions.
-    u32 triple;
-
-    /// Patterns, sorted by length in descending order.
-    ISelPattern *entries;
-} ISelList, ISelTable[IR_COUNT];
-
-/// Instruction selection tables.
-extern ISelTable x86_64_isel_table;
+typedef struct ISelTable {
+  Vector(ISelPattern) patterns;
+  Vector(string) register_names;
+} ISelTable;
 
 /// Instruction selector entry point.
 ///
@@ -132,5 +93,14 @@ extern ISelTable x86_64_isel_table;
 /// \param table The instruction selection table to use.
 void isel(CodegenContext *context, ISelTable table);
 
+/// Free an instruction table.
+void isel_table_free(ISelTable *table);
+
+/// Parse an instruction table.
+///
+/// \param filename The name of the file to parse.
+/// \param data The file contents.
+/// \return The parsed table, or NULL if there was an error.
+NODISCARD ISelTable *isel_table_parse(span filename, span data);
 
 #endif // INTERCEPT_ISel_H

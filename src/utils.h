@@ -142,6 +142,9 @@ void eprint(const char *fmt, ...);
 /// Check if two strings are equal.
 #define string_eq(a, b) ((a).size == (b).size && memcmp((a).data, (b).data, (a).size) == 0)
 
+/// Check if a string starts with a prefix.
+#define string_starts_with(str, prefix) ((str).size >= (prefix).size && memcmp((str).data, (prefix).data, (prefix).size) == 0)
+
 /// Convert a string to a span.
 #define as_span(str) ((span){(str).data, (str).size})
 

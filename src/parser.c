@@ -41,7 +41,7 @@ typedef struct Parser {
 ///  Lexer
 /// ===========================================================================
 /// All keywords.
-const struct {
+static const struct {
   span kw;
   enum TokenType type;
 } keywords[6] = {

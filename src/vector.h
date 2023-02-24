@@ -179,6 +179,20 @@ NODISCARD static inline bool vector_contains_impl(void *data, size_t size, size_
     }                                           \
   } while (0)
 
+#define vector_all_of(vector, out, index, ...) \
+  do {                                         \
+    size_t index = 0;                          \
+    for (; index < (vector).size; index++) {   \
+      if (!(__VA_ARGS__)) {                    \
+        (out) = false;                         \
+        break;                                 \
+      }                                        \
+    }                                          \
+    if (index == (vector).size) {              \
+      (out) = true;                            \
+    }                                          \
+  } while (0)
+
 #define list_node(type) \
   struct {              \
     type *prev;         \
