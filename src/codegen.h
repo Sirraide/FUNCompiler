@@ -66,6 +66,7 @@ struct CodegenContext {
   enum CodegenOutputFormat format;
   enum CodegenCallingConvention call_convention;
   enum CodegenAssemblyDialect dialect;
+  usz counter;
 };
 
 // TODO/FIXME: Make this a parameter affectable by command line arguments.

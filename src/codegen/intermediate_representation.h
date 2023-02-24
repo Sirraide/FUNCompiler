@@ -149,12 +149,18 @@ typedef struct IRInstruction {
 
   IRBlock *parent_block;
 
+  /// The MachineInstruction corresponding to this IRInstruction.
+  MInst* mi;
+
   union {
     IRBlock *destination_block;
     IRInstruction *operand;
     u64 imm;
     IRCall call;
-    Vector(IRPhiArgument*) phi_args; /// For unfortunate reasons, these *have* to be on the heap.
+    struct {
+      Vector(IRPhiArgument*) args;  ///< For unfortunate reasons, these *have* to be on the heap.
+      RegisterDescriptor vreg;
+    } phi;
     IRBranchConditional cond_br;
     struct {
       IRInstruction *addr;

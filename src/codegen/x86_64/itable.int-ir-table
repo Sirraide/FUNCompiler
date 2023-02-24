@@ -294,12 +294,6 @@ emit MOVnr o1, o2 .
 /// Indirect store.
 match i1
   where i1 IR_STORE
-    with o1 reg, o2 reg
-emit MOVmr o1, 0, o2 .
-  
-/// Indirect store with offset.
-match i1
-  where i1 IR_STORE
     with o1 reg, o2 imm, o3 reg
 emit MOVmr o1, o2, o3 .
 
