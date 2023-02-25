@@ -1,19 +1,18 @@
-#include <codegen.h>
-
 #include <ast.h>
+#include <codegen.h>
 #include <codegen/codegen_forward.h>
 #include <codegen/intermediate_representation.h>
-#include <codegen/x86_64/arch_x86_64.h>
 #include <codegen/ir/ir.h>
+#include <codegen/mir.h>
+#include <codegen/x86_64/arch_x86_64.h>
 #include <error.h>
 #include <ir_parser.h>
 #include <opt.h>
 #include <parser.h>
-#include <utils.h>
-
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <utils.h>
 
 #define DIAG(sev, loc, ...)                                                                                 \
   do {                                                                                                      \
@@ -38,8 +37,8 @@ CodegenContext *codegen_context_create
 {
   CodegenContext *context;
 
-  STATIC_ASSERT(CG_FMT_COUNT == 2, "codegen_context_create_top_level() must exhaustively handle all codegen output formats.");
-  STATIC_ASSERT(CG_CALL_CONV_COUNT == 2, "codegen_context_create_top_level() must exhaustively handle all calling conventions.");
+  STATIC_ASSERT(CG_FMT_COUNT == 2, "codegen_context_create() must exhaustively handle all codegen output formats.");
+  STATIC_ASSERT(CG_CALL_CONV_COUNT == 2, "codegen_context_create() must exhaustively handle all calling conventions.");
   switch (format) {
     case CG_FMT_x86_64_GAS:
       // Handle call_convention for creating codegen context!
@@ -616,13 +615,87 @@ void codegen_function(CodegenContext *ctx, Node *node) {
   else ir_return(ctx, NULL);
 }
 
+void lower_phis(CodegenContext *context) {
+  IRBlock *last_block = NULL;
+  FOREACH_INSTRUCTION (context) {
+    if (instruction->kind == IR_PHI) {
+      ASSERT(instruction->parent_block != last_block,
+          "Multiple PHI instructions in a single block are not allowed within register allocation!");
+      last_block = instruction->parent_block;
+
+      /// Single PHI argument means that we can replace it with a simple copy.
+      if (instruction->phi.args.size == 1) {
+        instruction->kind = IR_COPY;
+        IRInstruction *value = instruction->phi.args.data[0]->value;
+        vector_delete(instruction->phi.args);
+        instruction->operand = value;
+        continue;
+      }
+
+      /// For each of the PHI arguments, we basically insert a copy.
+      /// Where we insert it depends on some complicated factors
+      /// that have to do with control flow.
+      foreach_ptr (IRPhiArgument *, arg, instruction->phi.args) {
+        STATIC_ASSERT(IR_COUNT == 34, "Handle all branch types");
+        IRInstruction *branch = arg->block->instructions.last;
+        switch (branch->kind) {
+          /// If the predecessor returns or is unreachable, then the PHI
+          /// is never going to be reached anyway, so we can just ignore
+          /// this argument.
+          case IR_UNREACHABLE:
+          case IR_RETURN: continue;
+
+          /// Direct branches are easy, we just insert the copy before the branch.
+          case IR_BRANCH: {
+            IRInstruction *copy = ir_copy(context, arg->value);
+            ir_remove_use(arg->value, instruction);
+            mark_used(copy, instruction);
+            insert_instruction_before(copy, branch);
+            arg->value = copy;
+          } break;
+
+          /// Indirect branches are a bit more complicated. We need to insert an
+          /// additional block for the copy instruction and replace the branch
+          /// to the phi block with a branch to that block.
+          case IR_BRANCH_CONDITIONAL: {
+            IRInstruction *copy = ir_copy(context, arg->value);
+            IRBlock *critical_edge_trampoline = ir_block_create();
+
+            ir_remove_use(arg->value, instruction);
+            mark_used(copy, instruction);
+            arg->value = copy;
+
+            ir_insert_into_block(critical_edge_trampoline, copy);
+            ir_branch_into_block(instruction->parent_block, critical_edge_trampoline);
+            ir_block_attach_to_function(instruction->parent_block->function, critical_edge_trampoline);
+
+            if (branch->cond_br.then == instruction->parent_block) {
+              branch->cond_br.then = critical_edge_trampoline;
+            } else {
+              ASSERT(branch->cond_br.else_ == instruction->parent_block,
+                  "Branch to phi block is neither true nor false branch!");
+              branch->cond_br.else_ = critical_edge_trampoline;
+            }
+          } break;
+          default: UNREACHABLE();
+        }
+      }
+    }
+  }
+}
+
 /// ===========================================================================
 ///  Driver
 /// ===========================================================================
+/// This has to do the following things:
+///   - lower and replace parameters.
+///   - lower and replace allocas.
+///   - lower phis (replace w/ copies and set vreg).
 void codegen_lower(CodegenContext *context) {
   switch (context->format) {
     case CG_FMT_x86_64_GAS:
       codegen_lower_x86_64(context);
+      lower_phis(context);
       break;
     case CG_FMT_IR:
       codegen_lower_ir_backend(context);
@@ -723,18 +796,26 @@ bool codegen
     ir_femit(stdout, context);
   }
 
+  /// Optimise the IR.
   if (optimise) {
     codegen_optimise(context);
     if (debug_ir)
       ir_femit(stdout, context);
   }
 
+  /// Lower high-level IR concepts.
   codegen_lower(context);
 
+  /// Convert to MIR.
+  codegen_ir_to_mir(context);
+
+  /// Emit ASM.
   codegen_emit(context);
 
+  /// Cleanup.
   codegen_context_free(context);
 
+  /// Done.
   fclose(code);
   return true;
 }

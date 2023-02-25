@@ -1056,6 +1056,7 @@ AST *parse(span source, const char *filename) {
 
 NODISCARD const char *token_type_to_string(enum TokenType type) {
   switch (type) {
+    default: return "<unknown>";
     case TK_INVALID: return "invalid";
     case TK_EOF: return "EOF";
     case TK_IDENT: return "identifier";

@@ -3,13 +3,10 @@
 
 typedef MachineOperand Op;
 
-#define MI \
-  MInst *mi = calloc(1, sizeof *mi); \
-  insert_mi(ir->parent_block, mi);    \
-  mi->vreg = (u32) ctx->counter++
+#define MI CREATE_MIR_INSTRUCTION(ctx, ir, ir->parent_block->function)
 
 /// Insert a MIR instruction into a block.
-static void insert_mi(IRBlock *block, MInst *mi) {
+void insert_mi(IRBlock *block, MInst *mi) {
   TODO();
 }
 
@@ -24,16 +21,10 @@ static enum MIRType binary_instruction_kind(enum IRType t) {
 }
 
 /// Create a MIR instruction for an IR instruction.
-VReg ir_to_mir(CodegenContext *ctx, IRInstruction *ir) {
-  ASSERT(ctx->counter, "Counter must be set to a value greater than VREG_MIN");
+static VReg ir_to_mir(CodegenContext *ctx, IRInstruction *ir) {
+  ASSERT(ir->parent_block->function->mi_counter >= VREG_MIN, "Counter must be set to at least VREG_MIN");
   ASSERT(!ir->result, "Cannot lower precoloured IR instruction");
   if (ir->mi) return ir->mi->vreg;
-
-  /// Todo before this:
-  ///     - lower phis (replace w/ copies and set vreg).
-  ///     - lower and replace parameters.
-  ///     - lower and replace allocas.
-  ///     - lower returns (as in, branch to ret block).
 
   STATIC_ASSERT(IR_COUNT == 34, "Handle all IR instructions");
   switch (ir->kind) {
@@ -46,15 +37,12 @@ VReg ir_to_mir(CodegenContext *ctx, IRInstruction *ir) {
     default:
       UNREACHABLE();
 
-    /// Immediate value.
     case IR_IMMEDIATE: {
       MI;
       mi->kind = M_IMM;
       mi->operands[0] = (Op){.kind = M_OP_IMM, .value = ir->imm};
-      mi->vreg = (u32) ctx->counter++;
     } break;
 
-    /// Function call.
     case IR_CALL: {
       MI;
       mi->kind = M_CALL;
@@ -110,9 +98,6 @@ VReg ir_to_mir(CodegenContext *ctx, IRInstruction *ir) {
       mi->operands[2] = (Op){.kind = M_OP_BLOCK, .block = ir->cond_br.else_};
     } break;
 
-    case IR_UNREACHABLE: return VREG_INVALID;
-    case IR_REGISTER: return ir->result;
-
     case IR_COPY: {
       MI;
       mi->kind = M_COPY;
@@ -150,7 +135,15 @@ VReg ir_to_mir(CodegenContext *ctx, IRInstruction *ir) {
       mi->kind = M_NOT;
       mi->operands[0] = (Op){.kind = M_OP_REG, .value = ir_to_mir(ctx, ir->operand)};
     } break;
+
+    case IR_REGISTER: return ir->result;
+    case IR_UNREACHABLE: return VREG_INVALID;
   }
 
   return ir->mi->vreg;
+}
+
+void codegen_ir_to_mir(CodegenContext *ctx) {
+  FOREACH_INSTRUCTION(ctx)
+    ir_to_mir(ctx, instruction);
 }

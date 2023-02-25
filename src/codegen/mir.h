@@ -6,11 +6,28 @@
 typedef RegisterDescriptor VReg;
 #define VREG_MIN ((VReg)1024)
 #define VREG_INVALID ((VReg)0)
+#define MIR_BACKEND_FIRST (M_INSTRUCTION_COUNT)
+#define CREATE_MIR_INSTRUCTION(ctx, ir, function)   \
+  MInst *mi = calloc(1, sizeof *mi); \
+  insert_mi(ir->parent_block, mi);   \
+  mi->vreg = (u32) function->mi_counter++
+
+#define FOREACH_MIR_OP(mi)                             \
+  for (                                                \
+      MachineOperand                                   \
+          *op =  mi->operands[0].kind == M_OP_BUNDLE   \
+               ? mi->bundle.data                       \
+               : mi->operands,                         \
+          *_end_ = mi->operands[0].kind == M_OP_BUNDLE \
+               ? mi->bundle.data + mi->bundle.size     \
+               : mi->operands + 3;                     \
+      op < _end_;                                      \
+      op++                                             \
+  ) if (op->kind == M_OP_NONE) break; else
 
 enum MIRType {
   M_IMM,
   M_COPY,
-  M_ALLOCA,
   M_CALL,
   M_LOAD,
   M_STORE,
@@ -20,7 +37,7 @@ enum MIRType {
 #define F(type, ...) CAT(M_, type),
   ALL_BINARY_INSTRUCTION_TYPES(F)
 #undef F
-  MIR_COUNT,
+  M_INSTRUCTION_COUNT,
 };
 
 enum MIROperandType {
@@ -30,7 +47,6 @@ enum MIROperandType {
   M_OP_FUNC,       ///< Pointer to IR_FUNCTION. The type of this operand is `name`.
   M_OP_STATIC_REF, ///< Pointer to IR_STATIC_REF. The type of this operand is `name`.
   M_OP_BLOCK,      ///< Pointer to IR_BLOCK.
-  M_OP_ALLOCA,     ///< Pointer to IR_ALLOCA.
   M_OP_POISON,     ///< Poison value.
 
   /// This indicates that the three operands together
@@ -51,7 +67,7 @@ typedef struct MachineOperand {
 } MachineOperand;
 
 struct MInst {
-  enum MIRType kind;
+  int kind;
   VReg vreg;
 
   /// The operands of this instruction.
@@ -71,5 +87,11 @@ struct MInst {
   };
 };
 
+/// Convert IR to MIR.
+void codegen_ir_to_mir(CodegenContext *ctx);
+
+/// Insert a MIR instruction into a block.
+/// Should probably never be called manually.
+void insert_mi(IRBlock *block, MInst *mi);
 
 #endif // INTERCEPT_MIR_H

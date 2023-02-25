@@ -1,12 +1,12 @@
-#include <codegen/intermediate_representation.h>
 
 #include <ast.h>
 #include <codegen/codegen_forward.h>
+#include <codegen/intermediate_representation.h>
+#include <codegen/mir.h>
+#include <stdlib.h>
 #include <utils.h>
 
-#include <stdlib.h>
-
-//#define DEBUG_USES
+// #define DEBUG_USES
 void mark_used(IRInstruction *usee, IRInstruction *user) {
   foreach_ptr (IRInstruction *, i_user, usee->users) {
     ASSERT(i_user != user, "Instruction already marked as user.");
@@ -138,8 +138,8 @@ void ir_free_instruction_data(IRInstruction *i) {
   switch (i->kind) {
     case IR_CALL: vector_delete(i->call.arguments); break;
     case IR_PHI:
-        foreach_ptr (IRPhiArgument*, arg, i->phi_args) free(arg);
-      vector_delete(i->phi_args);
+        foreach_ptr (IRPhiArgument*, arg, i->phi.args) free(arg);
+      vector_delete(i->phi.args);
       break;
     default: break;
   }
@@ -247,7 +247,7 @@ void ir_femit_instruction
   case IR_PHI: {
     fprint(file, "%33phi ");
     bool first = true;
-    foreach_ptr (IRPhiArgument*, arg, inst->phi_args) {
+    foreach_ptr (IRPhiArgument*, arg, inst->phi.args) {
       if (first) { first = false; }
       else { fprint(file, "%31, "); }
       fprint(file, "%31[%33bb%Z%31 : %34%%%u%31]", arg->block->id, arg->value->id);
@@ -387,7 +387,7 @@ void ir_phi_add_argument
 (IRInstruction *phi,
  IRPhiArgument *argument)
 {
-  vector_push(phi->phi_args, argument);
+  vector_push(phi->phi.args, argument);
   mark_used(argument->value, phi);
 }
 
@@ -404,10 +404,10 @@ void ir_phi_argument
 }
 
 void ir_phi_remove_argument(IRInstruction *phi, IRBlock *block) {
-  foreach_ptr (IRPhiArgument*, argument, phi->phi_args) {
+  foreach_ptr (IRPhiArgument*, argument, phi->phi.args) {
     if (argument->block == block) {
       ir_remove_use(argument->value, phi);
-      vector_remove_element_unordered(phi->phi_args, argument);
+      vector_remove_element_unordered(phi->phi.args, argument);
       return;
     }
   }
@@ -445,6 +445,7 @@ IRFunction *ir_function(CodegenContext *context, span name, Type *function_type)
   IRFunction *function = calloc(1, sizeof(IRFunction));
   function->name = string_dup(name);
   function->type = function_type;
+  function->mi_counter = VREG_MIN;
 
   /// A function *must* contain at least one block, so we start new
   /// functions out with an empty block.
@@ -712,7 +713,7 @@ void ir_for_each_child(
   STATIC_ASSERT(IR_COUNT == 34, "Handle all instruction types.");
   switch (user->kind) {
   case IR_PHI:
-      foreach_ptr (IRPhiArgument*, arg, user->phi_args) {
+      foreach_ptr (IRPhiArgument*, arg, user->phi.args) {
       callback(user, &arg->value, data);
     }
     break;

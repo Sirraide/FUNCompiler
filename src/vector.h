@@ -27,6 +27,8 @@
 
 #define foreach(type, element, vector) \
   for (type *element = (vector).data; element < (vector).data + (vector).size; element++)
+#define foreach_rev(type, element, vector) \
+  for (type *element = (vector).data + (vector).size; --element >= (vector).data;)
 #define foreach_ptr(type, element, vector)                                                                  \
   for (type *element##_ptr = (vector).data, *element = NULL;                                                \
        element##_ptr < (vector).data + (vector).size && (element = *element##_ptr, 1); /* "=", not "=="! */ \
@@ -106,26 +108,41 @@
 #define vector_front(vector)             ((vector).data[0])
 #define vector_front_or(vector, default) ((vector).size ? vector_front(vector) : (default))
 
-/// Insert an element into a vector at before the given index.
-#define vector_insert(vector, pos, element)                                                         \
+/// Insert an element into a vector before another element.
+#define vector_insert(vector, ptr, element)                                                   \
   do {                                                                                              \
-    if ((pos) >= (vector).data + (vector).size) {                                                   \
+    if ((ptr) >= (vector).data + (vector).size) {                                                   \
       vector_push(vector, element);                                                                 \
     } else {                                                                                        \
       vector_reserve((vector), 1);                                                                  \
-      memmove((pos) + 1, (pos), ((vector).size - ((pos) - (vector).data)) * sizeof *(vector).data); \
-      *(pos) = element;                                                                             \
+      memmove((ptr) + 1, (ptr), ((vector).size - ((ptr) - (vector).data)) * sizeof *(vector).data); \
+      *(ptr) = element;                                                                             \
       (vector).size++;                                                                              \
     }                                                                                               \
   } while (0)
 
+/// Insert elements into a vector before another element.
+#define vector_insert_all(vector, ptr, elements)                                               \
+  do {                                                                                               \
+    if ((ptr) >= (vector).data + (vector).size) {                                                    \
+      vector_append_all(vector, elements);                                                           \
+    } else {                                                                                         \
+      vector_reserve((vector), (elements).size);                                                     \
+      memmove((ptr) + (elements).size, (ptr), ((vector).size - (size_t)((ptr) - (vector).data)) * sizeof *(vector).data); \
+      memcpy((ptr), (elements).data, (elements).size * sizeof *(elements).data);                     \
+      (vector).size += (elements).size;                                                              \
+    }                                                                                                \
+  } while (0)
+
+/// Insert elements into a vector before an index.
+#define vector_insert_all_before_index(vector, index, elements) \
+  vector_insert_all(vector, (vector).data + (index), elements)
+
 /// Remove an element from a vector by index.
-#define vector_remove_index(vector, index)                                                                                 \
-  do {                                                                                                                     \
-    if (index < (vector).size) {                                                                                           \
-      memmove((vector).data + (index), (vector).data + (index) + 1, ((vector).size - (index) -1) * sizeof *(vector).data); \
-      (vector).size--;                                                                                                     \
-    }                                                                                                                      \
+#define vector_remove_index(vector, index) \
+  do {                                     \
+    memmove((vector).data + (index), (vector).data + (index) + 1, ((vector).size - (index) - 1) * sizeof *(vector).data); \
+    (vector).size--;                       \
   } while (0)
 
 /// Remove an element from the vector.
@@ -144,17 +161,6 @@
     memcpy((to).data + (to).size, (from).data, (from).size * sizeof *(from).data); \
     (to).size += (from).size;                                                      \
   } while (0)
-
-#define vector_insert_before(vector, element, before)       \
-  do {                                                      \
-    size_t _index = 0;                                      \
-    for (; _index < (vector).size; _index++) {              \
-      if ((vector).data[_index] == before) { break; }       \
-    }                                                       \
-    vector_insert(vector, (vector).data + _index, element); \
-  } while (0)
-
-#define vector_insert_after(vector, element, after) vector_insert_before(vector, element, (after + 1))
 
 NODISCARD static inline bool vector_contains_impl(void *data, size_t size, size_t stride, void *elem) {
   for (size_t i = 0; i < size; i++)

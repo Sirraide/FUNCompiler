@@ -24,6 +24,18 @@
 #define FOREACH_INSTRUCTION(context) FOREACH_INSTRUCTION_N(context, function, block, instruction)
 #define FOREACH_INSTRUCTION_IN_FUNCTION(function) FOREACH_INSTRUCTION_IN_FUNCTION_N(function, block, instruction)
 
+#define FOREACH_MACHINE_INSTRUCTION_N(context, function, block, mi) \
+  foreach_ptr (IRFunction *, function, context->functions)                   \
+  list_foreach (IRBlock *, block, function->blocks)                           \
+      foreach_ptr (MInst *, mi, block->machine_instructions)
+
+#define FOREACH_MACHINE_INSTRUCTION_IN_FUNCTION_N(function, block, mi) \
+  list_foreach (IRBlock *, block, function->blocks)                              \
+      foreach_ptr (MInst *, mi, block->machine_instructions)
+
+#define FOREACH_MACHINE_INSTRUCTION(context) FOREACH_MACHINE_INSTRUCTION_N(context, function, block, mi)
+#define FOREACH_MACHINE_INSTRUCTION_IN_FUNCTION(function) FOREACH_MACHINE_INSTRUCTION_IN_FUNCTION_N(function, block, mi)
+
 /// All instructions that take two arguments.
 #define ALL_BINARY_INSTRUCTION_TYPES(F) \
   F(ADD, add)                           \
@@ -127,7 +139,6 @@ typedef struct IRBranchConditional {
 
 typedef struct IRStackAllocation {
   usz size;
-  usz offset;
 } IRStackAllocation;
 
 void mark_used(IRInstruction *usee, IRInstruction *user);
@@ -183,6 +194,7 @@ typedef struct IRBlock {
   string name;
 
   List(IRInstruction) instructions;
+  Vector(MInst*) machine_instructions;
 
   /// A pointer to the function the block is attached to, or NULL if
   /// detached.
@@ -216,6 +228,9 @@ typedef struct IRFunction {
   size_t locals_total_size;
 
   size_t registers_in_use;
+
+  /// Counter for machine instructions.
+  u32 mi_counter;
 
   bool attr_consteval : 1;
   bool attr_forceinline : 1;

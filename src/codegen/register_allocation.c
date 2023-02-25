@@ -25,94 +25,6 @@ typedef Vector(IRBlock *) BlockVector;
 
 //==== BEG REGISTER ALLOCATION PASSES ====
 
-static void phi2copy(IRFunction *f) {
-  IRBlock *last_block = NULL;
-  FOREACH_INSTRUCTION_IN_FUNCTION_N(f, b, phi) {
-    if (phi->kind == IR_PHI) {
-      ASSERT(phi->parent_block != last_block,
-          "Multiple PHI instructions in a single block are not allowed within register allocation!");
-      last_block = phi->parent_block;
-
-      /// Single PHI argument means that we can replace it with a simple copy.
-      if (phi->phi_args.size == 1) {
-        phi->kind = IR_COPY;
-        IRInstruction *value = phi->phi_args.data[0]->value;
-        vector_delete(phi->phi_args);
-        phi->operand = value;
-        continue;
-      }
-
-      /// For each of the PHI arguments, we basically insert a copy.
-      /// Where we insert it depends on some complicated factors
-      /// that have to do with control flow.
-      foreach_ptr (IRPhiArgument *, arg, phi->phi_args) {
-        STATIC_ASSERT(IR_COUNT == 34, "Handle all branch types");
-        IRInstruction *branch = arg->block->instructions.last;
-        switch (branch->kind) {
-          /// If the predecessor returns or is unreachable, then the PHI
-          /// is never going to be reached anyway, so we can just ignore
-          /// this argument.
-          case IR_UNREACHABLE:
-          case IR_RETURN: continue;
-
-          /// Direct branches are easy, we just insert the copy before the branch.
-          case IR_BRANCH: {
-            IRInstruction *copy = ir_copy(f->context, arg->value);
-            ir_remove_use(arg->value, phi);
-            mark_used(copy, phi);
-            insert_instruction_before(copy, branch);
-            arg->value = copy;
-          } break;
-
-          /// Indirect branches are a bit more complicated. We need to insert an
-          /// additional block for the copy instruction and replace the branch
-          /// to the phi block with a branch to that block.
-          case IR_BRANCH_CONDITIONAL: {
-            IRInstruction *copy = ir_copy(f->context, arg->value);
-            IRBlock *critical_edge_trampoline = ir_block_create();
-
-            ir_remove_use(arg->value, phi);
-            mark_used(copy, phi);
-            arg->value = copy;
-
-            ir_insert_into_block(critical_edge_trampoline, copy);
-            ir_branch_into_block(phi->parent_block, critical_edge_trampoline);
-            ir_block_attach_to_function(phi->parent_block->function, critical_edge_trampoline);
-
-            if (branch->cond_br.then == phi->parent_block) {
-              branch->cond_br.then = critical_edge_trampoline;
-            } else {
-              ASSERT(branch->cond_br.else_ == phi->parent_block,
-                  "Branch to phi block is neither true nor false branch!");
-              branch->cond_br.else_ = critical_edge_trampoline;
-            }
-          } break;
-          default: UNREACHABLE();
-        }
-      }
-    }
-  }
-}
-
-void function_call_arguments(IRFunction *f, const MachineDescription *desc) {
-  FOREACH_INSTRUCTION_IN_FUNCTION(f) {
-    if (instruction->kind == IR_CALL) {
-      foreach_index(i, instruction->call.arguments) {
-        if (i >= desc->argument_register_count) {
-          TODO("Handle stack allocated function parameters, somehow :p");
-        }
-        IRInstruction *argument = instruction->call.arguments.data[i];
-        Register result = desc->argument_registers[i];
-        IRInstruction *arg_copy = ir_copy(f->context, argument);
-        mark_used(arg_copy, instruction);
-        ir_remove_use(argument, instruction);
-        arg_copy->result = result;
-        insert_instruction_before(arg_copy, instruction);
-        instruction->call.arguments.data[i] = arg_copy;
-      }
-    }
-  }
-}
 
 void function_return_values(IRFunction *f, const MachineDescription *desc) {
   if (type_is_void(f->type->function.return_type)) return;
@@ -541,7 +453,7 @@ void coalesce(IRFunction *f, const MachineDescription *desc, IRInstructions *ins
         vector_clear(phis);
         foreach_ptr (IRInstruction *, phi, *instructions) {
           if (phi->kind != IR_PHI) { continue; }
-          foreach_ptr (IRPhiArgument *, arg, phi->phi_args) {
+          foreach_ptr (IRPhiArgument *, arg, phi->phi.args) {
             if (arg->value == to) {
               /// If a PHI node that uses to is already precoloured with
               /// a different register, then we need to keep the copy.
@@ -705,7 +617,7 @@ static void color(
     IRInstruction *inst = list->instruction;
     Register r = list->color;
     if (inst->kind == IR_PHI) {
-      foreach_ptr (IRPhiArgument *, phi, inst->phi_args) {
+      foreach_ptr (IRPhiArgument *, phi, inst->phi.args) {
         if (needs_register(phi->value)) {
           AdjacencyList *phi_list = g->lists.data[phi->value->index];
           if (!phi_list->color) {
@@ -738,16 +650,6 @@ void allocate_registers(IRFunction *f, const MachineDescription *desc) {
   debug_context = f->context;
   ir_femit_function(stdout, f);
 #endif
-
-
-  phi2copy(f);
-
-  DEBUG("After PHI2COPY\n");
-  ir_set_func_ids(f);
-  IR_FEMIT(stdout, f);
-
-  function_call_arguments(f, desc);
-  function_return_values(f, desc);
 
   fixup_precoloured(f);
 

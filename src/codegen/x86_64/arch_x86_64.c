@@ -1,11 +1,11 @@
-#include <codegen/x86_64/arch_x86_64.h>
-#include <codegen/x86_64/itable.h>
-
 #include <ast.h>
 #include <codegen.h>
 #include <codegen/codegen_forward.h>
 #include <codegen/intermediate_representation.h>
+#include <codegen/mir.h>
 #include <codegen/register_allocation.h>
+#include <codegen/x86_64/arch_x86_64.h>
+#include <codegen/x86_64/itable.h>
 #include <error.h>
 #include <inttypes.h>
 #include <opt.h>
@@ -75,6 +75,12 @@ NODISCARD static bool is_caller_saved(Register r) {
 NODISCARD static bool is_callee_saved(Register r) { return !is_caller_saved(r); }
 
 span unreferenced_block_name = literal_span_raw("");
+
+enum Instruction {
+  LEA = MIR_BACKEND_FIRST,
+  MOV,
+  CALL,
+};
 
 /// Types of conditional jump instructions (Jcc).
 /// Do NOT reorder these.
@@ -1070,6 +1076,7 @@ void emit_entry(CodegenContext *context) {
   }
 }
 
+/// TODO: This is jank. Yeet these.
 static Register *argument_registers = NULL;
 static size_t argument_register_count = 0;
 static Register general[GENERAL_REGISTER_COUNT] = {
@@ -1108,112 +1115,6 @@ static Register mswin_caller_saved_registers[MSWIN_CALLER_SAVED_REGISTER_COUNT] 
 static Register linux_caller_saved_registers[LINUX_CALLER_SAVED_REGISTER_COUNT] = {
   REG_RAX, REG_RCX, REG_RDX, REG_R8, REG_R9, REG_R10, REG_R11, REG_RSI, REG_RDI
 };
-
-typedef enum Clobbers {
-  CLOBBERS_NEITHER,
-  CLOBBERS_REFERENCE,
-  CLOBBERS_LEFT,
-  CLOBBERS_RIGHT,
-  CLOBBERS_BOTH,
-  CLOBBERS_OTHER,
-} Clobbers;
-
-Clobbers does_clobber(IRInstruction *instruction) {
-  STATIC_ASSERT(IR_COUNT == 34, "Exhaustive handling of IR types.");
-  switch (instruction->kind) {
-  case IR_ADD:
-  case IR_DIV:
-  case IR_MUL:
-  case IR_MOD:
-  case IR_AND:
-  case IR_OR:
-    return CLOBBERS_RIGHT;
-
-  case IR_SUB:
-  case IR_SHL:
-  case IR_SHR:
-  case IR_SAR:
-    return CLOBBERS_LEFT;
-
-  case IR_NOT:
-    return CLOBBERS_REFERENCE;
-
-  default:
-    break;
-  }
-  return CLOBBERS_NEITHER;
-}
-
-static void lower(CodegenContext *context) {
-  ASSERT(argument_registers, "arch_x86_64 backend can not lower IR when argument registers have not been initialized.");
-  FOREACH_INSTRUCTION (context) {
-    switch (instruction->kind) {
-      case IR_PARAMETER:
-        if ((size_t)instruction->imm >= argument_register_count) {
-          TODO("x86_64 backend doesn't yet support passing arguments on the stack, sorry.");
-        }
-        instruction->kind = IR_REGISTER;
-        instruction->result = argument_registers[instruction->imm];
-        break;
-      default:
-        break;
-    }
-  }
-
-  FOREACH_INSTRUCTION (context) {
-    Clobbers status;
-    if ((status = does_clobber(instruction))) {
-      switch (status) {
-      case CLOBBERS_BOTH:
-        TODO("Handle clobbering of both registers by a two address instruction.");
-      case CLOBBERS_REFERENCE: {
-        // TODO: Reduce code duplication.
-        IRInstruction *copy = ir_copy(context, instruction->operand);
-        ir_remove_use(instruction->operand, instruction);
-        mark_used(copy, instruction);
-        insert_instruction_before(copy, instruction);
-        instruction->operand = copy;
-      } break;
-      case CLOBBERS_LEFT: {
-        IRInstruction *copy = ir_copy(context, instruction->lhs);
-        ir_remove_use(instruction->lhs, instruction);
-        mark_used(copy, instruction);
-        insert_instruction_before(copy, instruction);
-        instruction->lhs = copy;
-      } break;
-      case CLOBBERS_RIGHT: {
-        IRInstruction *copy = ir_copy(context, instruction->rhs);
-        ir_remove_use(instruction->rhs, instruction);
-        mark_used(copy, instruction);
-        insert_instruction_before(copy, instruction);
-        instruction->rhs = copy;
-      } break;
-      default:
-      case CLOBBERS_NEITHER:
-        break;
-      }
-    }
-  }
-}
-
-void calculate_stack_offsets(CodegenContext *context) {
-  foreach_ptr (IRFunction*, function, context->functions) {
-    size_t offset = 0;
-    list_foreach (IRBlock *, block, function->blocks) {
-      list_foreach (IRInstruction *, instruction, block->instructions) {
-        switch (instruction->kind) {
-        case IR_ALLOCA:
-          offset += instruction->alloca.size;
-          instruction->alloca.offset = offset;
-          break;
-        default:
-          break;
-        }
-      }
-    }
-    function->locals_total_size = offset;
-  }
-}
 
 static size_t interfering_regs(IRInstruction *instruction) {
   ASSERT(instruction, "Can not get register interference of NULL instruction.");
@@ -1283,8 +1184,56 @@ void mangle_function_name(IRFunction *function) {
   function->name = (string){buf.data, buf.size};
 }
 
+/// More call arguments into the right registers.
+///
+/// Maybe ISel should handle this, but I don’t feel like adding
+/// iteration at match time to the ISel API at the moment...
+static void finalise_function_call_arguments(IRFunction *f, const MachineDescription *desc) {
+  Vector(struct insertion {
+    usz index_in_block;
+    IRBlock *block;
+    Vector(MInst*) instructions_to_insert;
+  }) insertions = {0};
+
+  FOREACH_MACHINE_INSTRUCTION_IN_FUNCTION (f) {
+    if (mi->kind == CALL) {
+      struct insertion i = {0};
+      i.index_in_block = (usz)(mi_ptr - block->machine_instructions.data);
+      i.block = block;
+      FOREACH_MIR_OP(mi) {
+        /// Stack parameter.
+        if ((usz)(_end_ - op) >= desc->argument_register_count) {
+          TODO("Handle stack allocated function parameters, somehow :p");
+        }
+
+        /// Register parameter.
+        else {
+          /// Create a copy of the parameter into the correct register.
+          MInst *copy = calloc(1, sizeof *copy);
+          copy->kind = MOV;
+          copy->vreg = argument_registers[(usz)(_end_ - op)];
+          copy->operands[0] = *op;
+          vector_push(i.instructions_to_insert, copy);
+
+          /// Replace the parameter with the copy.
+          op->kind = M_OP_REG;
+          op->value = copy->vreg;
+        }
+      }
+      vector_push(insertions, i);
+    }
+  }
+
+  /// Perform all the insertions in reverse order.
+  foreach_rev (struct insertion, i, insertions) {
+    vector_insert_all_before_index(i->block->machine_instructions, i->index_in_block, i->instructions_to_insert);
+    vector_delete(i->instructions_to_insert);
+  }
+  vector_delete(insertions);
+}
+
 void codegen_lower_x86_64(CodegenContext *context) {
-  // Setup register allocation structures.
+  /// Setup register allocation structures.
   switch (context->call_convention) {
     case CG_CALL_CONV_LINUX:
       caller_saved_register_count = LINUX_CALLER_SAVED_REGISTER_COUNT;
@@ -1302,8 +1251,40 @@ void codegen_lower_x86_64(CodegenContext *context) {
       ICE("Invalid call convention.");
   }
 
-  // IR fixup for this specific backend.
-  lower(context);
+  foreach_ptr (IRFunction*, function, context->functions) {
+    size_t offset = 0;
+    FOREACH_INSTRUCTION_IN_FUNCTION(function) {
+      switch (instruction->kind) {
+        default: break;
+
+        /// Lower parameters.
+        case IR_PARAMETER: {
+          ASSERT(!instruction->mi);
+          CREATE_MIR_INSTRUCTION(context, instruction, function);
+
+          if (instruction->imm >= argument_register_count) {
+            TODO("x86_64 backend doesn't yet support passing arguments on the stack, sorry.");
+          } else {
+            mi->kind = M_COPY;
+            mi->operands[0] = (MachineOperand){.kind = M_OP_REG, .value = argument_registers[instruction->imm]};
+          }
+        } break;
+
+        /// Compute offsets for local variables.
+        case IR_ALLOCA: {
+          offset += instruction->alloca.size;
+
+          ASSERT(!instruction->mi);
+          CREATE_MIR_INSTRUCTION(context, instruction, function);
+
+          mi->kind = LEA;
+          mi->operands[0] = (MachineOperand){.kind = M_OP_REG, .value = REG_RBP};
+          mi->operands[1] = (MachineOperand){.kind = M_OP_REG, .value = -offset};
+        } break;
+      }
+    }
+    function->locals_total_size = offset;
+  }
 }
 
 void codegen_emit_x86_64(CodegenContext *context) {
@@ -1378,9 +1359,10 @@ void codegen_emit_x86_64(CodegenContext *context) {
     .instruction_register_interference = interfering_regs
   };
 
-  foreach_ptr (IRFunction*, f, context->functions)
+  foreach_ptr (IRFunction*, f, context->functions) {
+    finalise_function_call_arguments(f, &desc);
     allocate_registers(f, &desc);
-
+  }
   if (debug_ir) ir_femit(stdout, context);
 
   // Assign block labels.
@@ -1433,8 +1415,6 @@ void codegen_emit_x86_64(CodegenContext *context) {
 
   /*ir_set_ids(context);
   ir_femit(stdout, context);*/
-
-  calculate_stack_offsets(context);
 
   // FUNCTION NAME MANGLING
   foreach_ptr (IRFunction*, function, context->functions) {

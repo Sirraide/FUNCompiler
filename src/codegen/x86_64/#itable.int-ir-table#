@@ -60,7 +60,7 @@ match i1
     with o1 reg, o* reg
 #call_attrs
 emit ALIGNSTACK 16
-emit CALLi o1, o* 
+emit CALL o1, o* 
 emit UNALIGNSTACK 16 .
 
 /// Direct call.
@@ -69,7 +69,7 @@ match i1
     with o1 name, o* reg
 #call_attrs
 emit ALIGNSTACK 16
-emit CALLd o1, o*
+emit CALL o1, o*
 emit UNALIGNSTACK 16 .
 
 undef #call_attrs
