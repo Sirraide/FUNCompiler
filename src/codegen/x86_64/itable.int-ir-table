@@ -25,6 +25,51 @@
 ///    then the source.
 
 /// =============================================
+///  Common ASM templates.
+/// =============================================
+/// NOTE: These templates do NOT use printf() or
+/// print()! Instead, register and instruction
+/// templates can make use of the following format
+/// specifiers:
+///   - '%O' emits an operand as per this table;
+///   - '%i'/%I' emit an instruction in lowercase/
+///     uppercase.
+///   - '%n' emits a number.
+///   - '%%' emits a '%' sign.
+///   - anything else is emitted literally.
+
+/// RM.
+template i1
+  with commutative o1 reg, o2 reg, o3 imm | name
+emit "%s %Q, [%Q + %Q]" .
+
+/// MR.
+template i1
+  with commutative o1 reg, o2 imm | name, o3 reg
+emit "%s [%Q + %Q], %Q" .
+  
+/// =============================================
+///  Intel dialect templates.
+/// ============================================= 
+ifdialect "intel"
+  template i     "%s"   lowercase .
+  template reg   "%s"   lowercase noprefix .
+  template name  "%s"   .
+  template imm   "%llu" .
+  template block "%s"   .
+
+/// =============================================
+///  AT&T dialect templates.
+/// =============================================  
+else
+  template i     "%s"    lowercase .
+  template reg   "%s"    lowercase prefix .
+  template name  "(%s)"  .
+  template imm   "$%llu" .
+  template block "%s"    .
+endif
+  
+/// =============================================
 ///  Immediate.
 /// =============================================
 /// Immediate+register add.
@@ -60,7 +105,7 @@ match i1
     with o1 reg, o* reg
 #call_attrs
 emit ALIGNSTACK 16
-emit CALLi o1, o* 
+emit CALL o1, o* 
 emit UNALIGNSTACK 16 .
 
 /// Direct call.
@@ -69,7 +114,7 @@ match i1
     with o1 name, o* reg
 #call_attrs
 emit ALIGNSTACK 16
-emit CALLd o1, o*
+emit CALL o1, o*
 emit UNALIGNSTACK 16 .
 
 undef #call_attrs
@@ -239,7 +284,7 @@ match i1, i2
     with o1 name
   where i2 M_LOAD
     with i1
-emit MOVrn result, o1 .
+emit MOVrm result, o1, %rip .
 
 /// Store a value.
 match i1, i2
@@ -247,13 +292,13 @@ match i1, i2
     with o1 name
   where i2 M_STORE
     with i1, o2 reg
-emit STOREnr o1, o2 .
+emit STOREmr o1, %rip, o2 .
     
 /// Load the address.
 match i1
   where i1 M_STATIC_REF
     with o1 name
-emit LEArn result, o1 .
+emit LEArm result, o1, %rip .
 
 /// =============================================
 ///  Function reference.
@@ -289,7 +334,7 @@ emit MOVrr result, o2 .
 match i1
   where i1 M_STORE
     with o1 name, o2 reg
-emit MOVnr o1, o2 .
+emit MOVmr o1, %rip, o2 .
 
 /// Indirect store.
 match i1

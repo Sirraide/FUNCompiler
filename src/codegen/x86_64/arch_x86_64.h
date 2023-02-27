@@ -34,4 +34,6 @@ void codegen_context_x86_64_linux_free(CodegenContext *ctx);
 void codegen_lower_x86_64(CodegenContext *context);
 void codegen_emit_x86_64(CodegenContext *context);
 
+bool x86_64_print_mir_instruction(CodegenContext *ctx, MInst *mi);
+
 #endif // ARCH_X86_64_H

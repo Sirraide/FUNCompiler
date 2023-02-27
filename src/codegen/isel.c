@@ -754,7 +754,12 @@ void parse_rule(Parser *p) {
 }
 
 /// Parser entry point.
-ISelTable *isel_table_parse(span filename, span data) {
+ISelTable *isel_table_parse(
+  span filename,
+  span data,
+  span platform_name,
+  span dialect
+) {
   Parser p = {0};
   p.l.source = data;
   p.l.filename = filename.data;

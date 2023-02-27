@@ -50,9 +50,9 @@ CodegenContext *codegen_context_create
         ICE("Unrecognized calling convention!");
       }
       break;
-    case CG_FMT_IR:
+    /*case CG_FMT_IR:
       context = codegen_context_ir_create();
-      break;
+      break;*/
     default: UNREACHABLE();
   }
 
@@ -113,10 +113,10 @@ void codegen_context_free(CodegenContext *context) {
       else if (context->call_convention == CG_CALL_CONV_LINUX) codegen_context_x86_64_linux_free(context);
       else ICE("Unrecognized calling convention!");
       break;
-
+/*
     case CG_FMT_IR:
       codegen_context_ir_free(context);
-      break;
+      break;*/
   }
 
   /// Free the context itself.
@@ -632,6 +632,9 @@ void lower_phis(CodegenContext *context) {
         continue;
       }
 
+      /// Allocate a virtual register for the PHI.
+      instruction->phi.vreg = function->mi_counter++;
+
       /// For each of the PHI arguments, we basically insert a copy.
       /// Where we insert it depends on some complicated factors
       /// that have to do with control flow.
@@ -697,9 +700,9 @@ void codegen_lower(CodegenContext *context) {
       codegen_lower_x86_64(context);
       lower_phis(context);
       break;
-    case CG_FMT_IR:
+    /*case CG_FMT_IR:
       codegen_lower_ir_backend(context);
-      break;
+      break;*/
     default:
       TODO("Handle %d code generation format.", context->format);
   }
@@ -708,15 +711,18 @@ void codegen_lower(CodegenContext *context) {
 void codegen_emit(CodegenContext *context) {
   switch (context->format) {
     case CG_FMT_x86_64_GAS:
-      codegen_emit_x86_64(context);
+      //codegen_emit_x86_64(context);
       break;
-    case CG_FMT_IR:
+    /*case CG_FMT_IR:
       codegen_emit_ir_backend(context);
-      break;
+      break;*/
     default:
       TODO("Handle %d code generation format.", context->format);
   }
 }
+
+/// Command-line options.
+extern bool no_emit;
 
 bool codegen
 (enum CodegenLanguage lang,
@@ -809,8 +815,12 @@ bool codegen
   /// Convert to MIR.
   codegen_ir_to_mir(context);
 
+  if (debug_mir) mir_print(context);
+
   /// Emit ASM.
-  codegen_emit(context);
+  if (no_emit) return true;
+  TODO("Update backend to use MIR. (codegen_emit)");
+  //codegen_emit(context);
 
   /// Cleanup.
   codegen_context_free(context);

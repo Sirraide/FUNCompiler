@@ -5,7 +5,6 @@
 #include <codegen/mir.h>
 #include <codegen/register_allocation.h>
 #include <codegen/x86_64/arch_x86_64.h>
-#include <codegen/x86_64/itable.h>
 #include <error.h>
 #include <inttypes.h>
 #include <opt.h>
@@ -19,6 +18,9 @@
 #include <typechecker.h>
 #include <vector.h>
 
+/// ===========================================================================
+///  Registers, instructions, and other data.
+/// ===========================================================================
 #define DEFINE_REGISTER_ENUM(name, ...) REG_##name,
 #define REGISTER_NAME_64(ident, name, ...) name,
 #define REGISTER_NAME_32(ident, name, name_32, ...) name_32,
@@ -59,98 +61,23 @@ DEFINE_REGISTER_NAME_LOOKUP_FUNCTION(register_name_8, 8)
 // TODO: This should probably be 13?
 #define GENERAL_REGISTER_COUNT 14
 
-
-static Register *caller_saved_registers = NULL;
-static size_t caller_saved_register_count = 0;
-
-NODISCARD static bool is_caller_saved(Register r) {
-  for (size_t i = 0; i < caller_saved_register_count; ++i) {
-    if (caller_saved_registers[i] == r) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-NODISCARD static bool is_callee_saved(Register r) { return !is_caller_saved(r); }
-
-span unreferenced_block_name = literal_span_raw("");
+static const span unreferenced_block_name = literal_span_raw("");
 
 enum Instruction {
   LEA = MIR_BACKEND_FIRST,
   MOV,
   CALL,
+  JZ,
+  JE = JZ,
+  JG,
+  JGE,
+  JL,
+  JLE,
+  JNZ,
+  JNE = JNZ,
+
+  INSTRUCTION_COUNT,
 };
-
-/// Types of conditional jump instructions (Jcc).
-/// Do NOT reorder these.
-enum IndirectJumpType {
-  JUMP_TYPE_A,
-  JUMP_TYPE_AE,
-  JUMP_TYPE_B,
-  JUMP_TYPE_BE,
-  JUMP_TYPE_C,
-  JUMP_TYPE_Z,
-  JUMP_TYPE_E = JUMP_TYPE_Z,
-  JUMP_TYPE_G,
-  JUMP_TYPE_GE,
-  JUMP_TYPE_L,
-  JUMP_TYPE_LE,
-  JUMP_TYPE_NA,
-  JUMP_TYPE_NAE,
-  JUMP_TYPE_NB,
-  JUMP_TYPE_NBE,
-  JUMP_TYPE_NC,
-  JUMP_TYPE_NE,
-  JUMP_TYPE_NZ = JUMP_TYPE_NE,
-  JUMP_TYPE_NG,
-  JUMP_TYPE_NGE,
-  JUMP_TYPE_NL,
-  JUMP_TYPE_NLE,
-  JUMP_TYPE_NO,
-  JUMP_TYPE_NP,
-  JUMP_TYPE_NS,
-  JUMP_TYPE_O,
-  JUMP_TYPE_P,
-  JUMP_TYPE_PE,
-  JUMP_TYPE_PO,
-  JUMP_TYPE_S,
-
-  JUMP_TYPE_COUNT,
-};
-
-/// Do NOT reorder these.
-static const char *jump_type_names_x86_64[JUMP_TYPE_COUNT] = {
-    "a",
-    "ae",
-    "b",
-    "be",
-    "c",
-    "z",
-    "g",
-    "ge",
-    "l",
-    "le",
-    "na",
-    "nae",
-    "nb",
-    "nbe",
-    "nc",
-    "nz",
-    "ng",
-    "nge",
-    "nl",
-    "nle",
-    "no",
-    "np",
-    "ns",
-    "o",
-    "p",
-    "pe",
-    "po",
-    "s",
-};
-
 
 enum RegSize {
   r64,
@@ -189,388 +116,9 @@ static const char * regname_from_bytes(RegisterDescriptor reg, u64 bytes) {
   return regname(reg, regsize_from_bytes(bytes));
 }
 
-const char *setcc_suffixes_x86_64[COMPARE_COUNT] = {
-    "e",
-    "ne",
-    "l",
-    "le",
-    "g",
-    "ge",
-};
-
-static const char *instruction_mnemonic(CodegenContext *context, enum Instruction instruction) {
-  STATIC_ASSERT(I_COUNT == 24, "ERROR: instruction_mnemonic() must exhaustively handle all instructions.");
-  // x86_64 instructions that aren't different across syntaxes can go here!
-  switch (instruction) {
-  default: break;
-  case I_ADD: return "add";
-  case I_SUB: return "sub";
-    // case I_MUL: return "mul";
-  case I_IMUL: return "imul";
-    // case I_DIV: return "div";
-  case I_IDIV: return "idiv";
-  case I_SAL: return "sal";
-  case I_SAR: return "sar";
-  case I_SHR: return "shr";
-  case I_AND: return "and";
-  case I_OR: return "or";
-  case I_NOT: return "not";
-  case I_PUSH: return "push";
-  case I_POP: return "pop";
-  case I_XOR: return "xor";
-  case I_CMP: return "cmp";
-  case I_CALL: return "call";
-  case I_JMP: return "jmp";
-  case I_RET: return "ret";
-  case I_MOV: return "mov";
-  case I_XCHG: return "xchg";
-  case I_LEA: return "lea";
-  case I_SETCC: return "set";
-  case I_TEST: return "test";
-  case I_JCC: return "j";
-  }
-
-  switch (context->dialect) {
-  default: ICE("instruction_mnemonic(): Unknown output format.");
-
-  case CG_ASM_DIALECT_ATT:
-    switch (instruction) {
-    default: ICE("instruction_mnemonic(): Unknown instruction.");
-    case I_CQO: return "cqto";
-    }
-
-  case CG_ASM_DIALECT_INTEL:
-    switch (instruction) {
-    default: ICE("instruction_mnemonic(): Unknown instruction.");
-    case I_CQO: return "cqo";
-    }
-  }
-}
-
-static enum IndirectJumpType comparison_to_jump_type(enum ComparisonType comparison) {
-  switch (comparison) {
-    case COMPARE_EQ: return JUMP_TYPE_E;
-    case COMPARE_NE: return JUMP_TYPE_NE;
-    case COMPARE_LT: return JUMP_TYPE_L;
-    case COMPARE_LE: return JUMP_TYPE_LE;
-    case COMPARE_GT: return JUMP_TYPE_G;
-    case COMPARE_GE: return JUMP_TYPE_GE;
-    default: ICE("comparison_to_jump_type_x86_64(): Unknown comparison type.");
-  }
-}
-
-static enum IndirectJumpType negate_jump(enum IndirectJumpType j) {
-  switch (j) {
-    case JUMP_TYPE_E: return JUMP_TYPE_NE;
-    case JUMP_TYPE_NE: return JUMP_TYPE_E;
-    case JUMP_TYPE_L: return JUMP_TYPE_GE;
-    case JUMP_TYPE_LE: return JUMP_TYPE_G;
-    case JUMP_TYPE_G: return JUMP_TYPE_LE;
-    case JUMP_TYPE_GE: return JUMP_TYPE_L;
-    default: ICE("negate_jump(): Unknown jump type.");
-  }
-}
-
-static void femit_imm_to_reg(CodegenContext *context, enum Instruction inst, int64_t immediate, RegisterDescriptor destination_register, enum RegSize size) {
-  const char *mnemonic    = instruction_mnemonic(context, inst);
-  const char *destination = regname(destination_register, size);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s $%D, %%%s\n",
-          mnemonic, immediate, destination);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s %s, %D\n",
-          mnemonic, destination, immediate);
-      break;
-    default: ICE("ERROR: femit_imm_to_reg(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_imm_to_mem(CodegenContext *context, enum Instruction inst, int64_t immediate, RegisterDescriptor address_register, int64_t offset) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *address = register_name(address_register);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s $%D, %D(%%%s)\n",
-          mnemonic, immediate, offset, address);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s [%s + %D], %D\n",
-          mnemonic, address, offset, immediate);
-      break;
-    default: ICE("ERROR: femit_imm_to_mem(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_mem_to_reg(CodegenContext *context, enum Instruction inst, RegisterDescriptor address_register, int64_t offset, RegisterDescriptor destination_register, enum RegSize size) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *address = register_name(address_register);
-  const char *destination = regname(destination_register, size);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s %D(%%%s), %%%s\n",
-          mnemonic, offset, address, destination);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s %s, [%s + %D]\n",
-          mnemonic, destination, address, offset);
-      break;
-    default: ICE("ERROR: femit_mem_to_reg(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_name_to_reg(CodegenContext *context, enum Instruction inst, RegisterDescriptor address_register, const char *name, RegisterDescriptor destination_register, enum RegSize size) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *address = register_name(address_register);
-  const char *destination = regname(destination_register, size);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s (%s)(%%%s), %%%s\n",
-          mnemonic, name, address, destination);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s %s, [%s + %s]\n",
-          mnemonic, destination, address, name);
-      break;
-    default: ICE("ERROR: femit_name_to_reg(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_reg_to_mem(CodegenContext *context, enum Instruction inst, RegisterDescriptor source_register, enum RegSize size, RegisterDescriptor address_register, int64_t offset) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *source = regname(source_register, size);
-  const char *address = register_name(address_register);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      if (offset) {
-        fprint(context->code, "    %s %%%s, %D(%%%s)\n",
-                mnemonic, source, offset, address);
-      } else {
-        fprint(context->code, "    %s %%%s, (%%%s)\n",
-                mnemonic, source, address);
-      }
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      if (offset) {
-        fprint(context->code, "    %s [%s + %D], %s\n",
-                mnemonic, address, offset, source);
-      } else {
-        fprint(context->code, "    %s [%s], %s\n",
-                mnemonic, address, source);
-      }
-      break;
-    default: ICE("ERROR: femit_reg_to_mem(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_reg_to_reg(CodegenContext *context, enum Instruction inst, RegisterDescriptor source_register, RegisterDescriptor destination_register) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *source = register_name(source_register);
-  const char *destination = register_name(destination_register);
-
-  // Always optimise away moves from a register to itself
-  if (inst == I_MOV && source_register == destination_register) return;
-
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s %%%s, %%%s\n",
-          mnemonic, source, destination);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s %s, %s\n",
-          mnemonic, destination, source);
-      break;
-    default: ICE("ERROR: femit_reg_to_reg(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_reg_to_name(CodegenContext *context, enum Instruction inst, RegisterDescriptor source_register, enum RegSize size, RegisterDescriptor address_register, const char *name) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *source = regname(source_register, size);
-  const char *address = register_name(address_register);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s %%%s, %s(%%%s)\n",
-          mnemonic, source, name, address);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s [%s + %s], %s\n",
-          mnemonic, address, name, source);
-      break;
-    default: ICE("ERROR: femit_reg_to_name(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_mem(CodegenContext *context, enum Instruction inst, int64_t offset, RegisterDescriptor address_register) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *address = register_name(address_register);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s %D(%%%s)\n",
-          mnemonic, offset, address);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s [%s + %D]\n",
-          mnemonic, address, offset);
-      break;
-    default: ICE("ERROR: femit_mem(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_reg_shift(CodegenContext *context, enum Instruction inst, RegisterDescriptor register_to_shift) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *cl = register_name_8(REG_RCX);
-  switch (context->dialect) {
-  case CG_ASM_DIALECT_ATT:
-    fprint(context->code, "    %s %%%s, %%%s\n",
-           mnemonic, cl, register_name(register_to_shift));
-    break;
-  case CG_ASM_DIALECT_INTEL:
-    fprint(context->code, "    %s %s, %s\n",
-           mnemonic, register_name(register_to_shift), cl);
-    break;
-  default: ICE("ERROR: femit(): Unsupported dialect %d for shift instruction", context->dialect);
-  }
-}
-
-/// You should probably use `femit_reg`
-static void femit_indirect_branch(CodegenContext *context, enum Instruction inst, RegisterDescriptor address_register) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *address = register_name(address_register);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s *%%%s\n",
-          mnemonic, address);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s %s\n",
-          mnemonic, address);
-      break;
-    default: ICE("ERROR: femit_indirect_branch(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_reg(CodegenContext *context, enum Instruction inst, RegisterDescriptor reg) {
-  if (inst == I_JMP || inst == I_CALL) {
-    femit_indirect_branch(context, inst, reg);
-    return;
-  }
-  if (inst == I_SAL || inst == I_SAR || inst == I_SHL || inst == I_SHR) {
-    femit_reg_shift(context, inst, reg);
-    return;
-  }
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  const char *source = register_name(reg);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s %%%s\n",
-          mnemonic, source);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s %s\n",
-          mnemonic, source);
-      break;
-    default: ICE("ERROR: femit_reg(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_imm(CodegenContext *context, enum Instruction inst, int64_t immediate) {
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  switch (context->dialect) {
-    case CG_ASM_DIALECT_ATT:
-      fprint(context->code, "    %s $%D\n",
-          mnemonic, immediate);
-      break;
-    case CG_ASM_DIALECT_INTEL:
-      fprint(context->code, "    %s %D\n",
-          mnemonic, immediate);
-      break;
-    default: ICE("ERROR: femit_imm(): Unsupported dialect %d", context->dialect);
-  }
-}
-
-static void femit_name(CodegenContext *context, enum Instruction inst, const char *name) {
-  ASSERT(name, "NAME must not be NULL.");
-  const char *mnemonic = instruction_mnemonic(context, inst);
-  switch (context->dialect) {
-  case CG_ASM_DIALECT_ATT:
-  case CG_ASM_DIALECT_INTEL:
-    fprint(context->code, "    %s %s\n",
-           mnemonic, name);
-    break;
-  default: ICE("ERROR: femit(): Unsupported dialect %d for CALL/JMP instruction", context->dialect);
-  }
-}
-
-static void femit
-(CodegenContext *context,
- enum Instruction instruction,
- ...)
-{
-  va_list args;
-  va_start(args, instruction);
-
-  ASSERT(context);
-  STATIC_ASSERT(I_COUNT == 24, "femit() must exhaustively handle all x86_64 instructions.");
-
-  // TODO: Extract setcc and jcc to their own functions, get rid of varargs
-  switch (instruction) {
-    case I_SETCC: {
-      enum ComparisonType comparison_type = va_arg(args, enum ComparisonType);
-      RegisterDescriptor value_register = va_arg(args, RegisterDescriptor);
-
-      const char *mnemonic = instruction_mnemonic(context, instruction);
-      const char *value = register_name_8(value_register);
-
-      switch (context->dialect) {
-        case CG_ASM_DIALECT_ATT:
-          fprint(context->code, "    %s%s %%%s\n",
-              mnemonic,
-              setcc_suffixes_x86_64[comparison_type], value);
-          break;
-        case CG_ASM_DIALECT_INTEL:
-          fprint(context->code, "    %s%s %s\n",
-              mnemonic,
-              setcc_suffixes_x86_64[comparison_type], value);
-          break;
-        default: ICE("ERROR: femit(): Unsupported dialect %d", context->dialect);
-      }
-    } break;
-
-    case I_JCC: {
-      enum IndirectJumpType type = va_arg(args, enum IndirectJumpType);
-      ASSERT(type < JUMP_TYPE_COUNT, "femit_direct_branch(): Invalid jump type %d", type);
-      char *label = va_arg(args, char *);
-      ASSERT(label, "JCC label must not be NULL.");
-
-      const char *mnemonic = instruction_mnemonic(context, I_JCC);
-
-      switch (context->dialect) {
-        case CG_ASM_DIALECT_ATT:
-        case CG_ASM_DIALECT_INTEL:
-          fprint(context->code, "    %s%s %s\n",
-              mnemonic, jump_type_names_x86_64[type], label);
-          break;
-        default: ICE("ERROR: femit_direct_branch(): Unsupported dialect %d", context->dialect);
-      }
-    } break;
-
-    case I_RET:
-    case I_CQO: {
-      const char *mnemonic = instruction_mnemonic(context, instruction);
-      fprint(context->code, "    %s\n", mnemonic);
-    } break;
-
-  default:
-    ICE("Unhandled instruction in femit(): %d (%s)\n"
-        "  Consider using femit_x() or femit_x_to_x()",
-        instruction, instruction_mnemonic(context, instruction));
-  }
-
-  va_end(args);
-}
-
+/// ===========================================================================
+///  Context creation.
+/// ===========================================================================
 /// Creates a context for the CG_FMT_x86_64_MSWIN architecture.
 CodegenContext *codegen_context_x86_64_mswin_create() {
   RegisterPool pool;
@@ -650,7 +198,7 @@ void codegen_context_x86_64_linux_free(CodegenContext *ctx) {
   free(ctx->register_pool.registers);
   free(ctx->register_pool.scratch_registers);
 }
-
+/*
 /// Generate a comparison between two registers.
 static RegisterDescriptor codegen_comparison
 (CodegenContext *cg_context,
@@ -669,7 +217,7 @@ static RegisterDescriptor codegen_comparison
   femit(cg_context, I_SETCC, type, result);
 
   return result;
-}
+}*/
 
 enum StackFrameKind {
   FRAME_FULL,
@@ -694,6 +242,7 @@ static enum StackFrameKind stack_frame_kind(CodegenContext *context, IRFunction 
   return FRAME_NONE;
 }
 
+/*
 /// Emit the function prologue.
 static void codegen_prologue(CodegenContext *cg_context, IRFunction *f) {
   enum StackFrameKind frame_kind = stack_frame_kind(cg_context, f);
@@ -1075,10 +624,9 @@ void emit_entry(CodegenContext *context) {
     fprint(context->code, ".global %S\n", function->name);
   }
 }
+*/
 
 /// TODO: This is jank. Yeet these.
-static Register *argument_registers = NULL;
-static size_t argument_register_count = 0;
 static Register general[GENERAL_REGISTER_COUNT] = {
   REG_RAX,
   REG_RCX,
@@ -1183,7 +731,7 @@ void mangle_function_name(IRFunction *function) {
   free(function->name.data);
   function->name = (string){buf.data, buf.size};
 }
-
+/*
 /// More call arguments into the right registers.
 ///
 /// Maybe ISel should handle this, but I don’t feel like adding
@@ -1230,27 +778,9 @@ static void finalise_function_call_arguments(IRFunction *f, const MachineDescrip
     vector_delete(i->instructions_to_insert);
   }
   vector_delete(insertions);
-}
+}*/
 
 void codegen_lower_x86_64(CodegenContext *context) {
-  /// Setup register allocation structures.
-  switch (context->call_convention) {
-    case CG_CALL_CONV_LINUX:
-      caller_saved_register_count = LINUX_CALLER_SAVED_REGISTER_COUNT;
-      caller_saved_registers = linux_caller_saved_registers;
-      argument_register_count = LINUX_ARGUMENT_REGISTER_COUNT;
-      argument_registers = linux_argument_registers;
-      break;
-    case CG_CALL_CONV_MSWIN:
-      caller_saved_register_count = MSWIN_CALLER_SAVED_REGISTER_COUNT;
-      caller_saved_registers = mswin_caller_saved_registers;
-      argument_register_count = MSWIN_ARGUMENT_REGISTER_COUNT;
-      argument_registers = mswin_argument_registers;
-      break;
-    default:
-      ICE("Invalid call convention.");
-  }
-
   foreach_ptr (IRFunction*, function, context->functions) {
     size_t offset = 0;
     FOREACH_INSTRUCTION_IN_FUNCTION(function) {
@@ -1262,11 +792,12 @@ void codegen_lower_x86_64(CodegenContext *context) {
           ASSERT(!instruction->mi);
           CREATE_MIR_INSTRUCTION(context, instruction, function);
 
-          if (instruction->imm >= argument_register_count) {
+          ASSERT(context->call_convention == CG_CALL_CONV_LINUX, "ISel only supports Linux calling convention at the moment.");
+          if (instruction->imm >= 6 /*argument_register_count*/) {
             TODO("x86_64 backend doesn't yet support passing arguments on the stack, sorry.");
           } else {
             mi->kind = M_COPY;
-            mi->operands[0] = (MachineOperand){.kind = M_OP_REG, .value = argument_registers[instruction->imm]};
+            mi->operands[0] = (MachineOperand){.kind = M_OP_REG, .value = /*argument_registers*/linux_argument_registers[instruction->imm]};
           }
         } break;
 
@@ -1279,7 +810,7 @@ void codegen_lower_x86_64(CodegenContext *context) {
 
           mi->kind = LEA;
           mi->operands[0] = (MachineOperand){.kind = M_OP_REG, .value = REG_RBP};
-          mi->operands[1] = (MachineOperand){.kind = M_OP_REG, .value = -offset};
+          mi->operands[1] = (MachineOperand){.kind = M_OP_IMM, .value = -offset};
         } break;
       }
     }
@@ -1287,6 +818,23 @@ void codegen_lower_x86_64(CodegenContext *context) {
   }
 }
 
+bool x86_64_print_mir_instruction(CodegenContext *ctx, MInst *mi) {
+  (void) ctx;
+  switch (mi->kind) {
+    case LEA: print("LEA"); return true;
+    case MOV: print("MOV"); return true;
+    case CALL: print("CALL"); return true;
+    case JZ: print("JZ"); return true;
+    case JG: print("JG"); return true;
+    case JGE: print("JGE"); return true;
+    case JL: print("JL"); return true;
+    case JLE: print("JLE"); return true;
+    case JNZ: print("JNZ"); return true;
+    default: return false;
+  }
+}
+
+/*
 void codegen_emit_x86_64(CodegenContext *context) {
   /// Emit static variables.
   /// TODO: interning.
@@ -1413,8 +961,8 @@ void codegen_emit_x86_64(CodegenContext *context) {
     }
   }
 
-  /*ir_set_ids(context);
-  ir_femit(stdout, context);*/
+  *//*ir_set_ids(context);
+  ir_femit(stdout, context);*//*
 
   // FUNCTION NAME MANGLING
   foreach_ptr (IRFunction*, function, context->functions) {
@@ -1428,4 +976,4 @@ void codegen_emit_x86_64(CodegenContext *context) {
   foreach_ptr (IRFunction*, function, context->functions) {
     if (!function->is_extern) emit_function(context, function);
   }
-}
+}*/

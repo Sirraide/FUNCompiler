@@ -10,6 +10,7 @@
 #include <vector.h>
 
 extern bool debug_ir;
+extern bool debug_mir;
 extern bool codegen_only;
 
 typedef Vector(IRInstruction *) InstructionVector;

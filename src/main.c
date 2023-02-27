@@ -16,6 +16,7 @@ void print_usage(char **argv) {
          "   `--callings`      :: List acceptable calling conventions.\n"
          "   `--dialects`      :: List acceptable assembly dialects.\n"
          "   `--debug-ir`      :: Dump IR to stdout (in debug format).\n"
+         "   `--debug-mir`     :: Dump Machine IR to stdout (in debug format).\n"
          "   `--print-ast      :: Print the AST and exit.\n"
          "   `--syntax-only    :: Perform no semantic analysis.\n"
          "   `--print-scopes   :: Print the scope tree and exit.\n"
@@ -39,11 +40,13 @@ enum CodegenAssemblyDialect output_assembly_dialect = CG_ASM_DIALECT_DEFAULT;
 int verbosity = 0;
 int optimise = 0;
 bool debug_ir = false;
+bool debug_mir = false;
 bool print_ast = false;
 bool syntax_only = false;
 bool print_scopes = false;
 bool prefer_using_diagnostics_colours = true;
 bool colours_blink = false;
+bool no_emit = false; /// Undocumented.
 
 void print_acceptable_formats() {
   print("Acceptable formats include:\n"
@@ -99,12 +102,16 @@ int handle_command_line_arguments(int argc, char **argv) {
       exit(0);
     } else if (strcmp(argument, "--debug-ir") == 0) {
       debug_ir = true;
+    } else if (strcmp(argument, "--debug-mir") == 0) {
+      debug_mir = true;
     } else if (strcmp(argument, "--print-ast") == 0) {
       print_ast = true;
     } else if (strcmp(argument, "--print-scopes") == 0) {
       print_scopes = true;
     } else if (strcmp(argument, "--syntax-only") == 0) {
       syntax_only = true;
+    } else if (strcmp(argument, "--noemit") == 0) {
+      no_emit = true;
     } else if (strcmp(argument, "-O") == 0
                || strcmp(argument, "--optimise") == 0) {
       optimise = 1;

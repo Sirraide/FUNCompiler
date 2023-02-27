@@ -4,13 +4,16 @@
 #include <codegen/intermediate_representation.h>
 
 typedef RegisterDescriptor VReg;
-#define VREG_MIN ((VReg)1024)
-#define VREG_INVALID ((VReg)0)
+#define VREG_MIN          ((VReg) 1024)
+#define VREG_INVALID      ((VReg) 0)
 #define MIR_BACKEND_FIRST (M_INSTRUCTION_COUNT)
-#define CREATE_MIR_INSTRUCTION(ctx, ir, function)   \
+#define CREATE_MIR_INSTRUCTION_VREG(ctx, ir, function, virt_reg) \
   MInst *mi = calloc(1, sizeof *mi); \
   insert_mi(ir->parent_block, mi);   \
-  mi->vreg = (u32) function->mi_counter++
+  mi->vreg = virt_reg;               \
+  ir->mi = mi
+
+#define CREATE_MIR_INSTRUCTION(ctx, ir, function) CREATE_MIR_INSTRUCTION_VREG(ctx, ir, function, (u32) function->mi_counter++)
 
 #define FOREACH_MIR_OP(mi)                             \
   for (                                                \
@@ -70,6 +73,9 @@ struct MInst {
   int kind;
   VReg vreg;
 
+  /// Number of users.
+  usz refcount;
+
   /// The operands of this instruction.
   union {
     MachineOperand operands[3];
@@ -93,5 +99,8 @@ void codegen_ir_to_mir(CodegenContext *ctx);
 /// Insert a MIR instruction into a block.
 /// Should probably never be called manually.
 void insert_mi(IRBlock *block, MInst *mi);
+
+/// Print MIR.
+void mir_print(CodegenContext *ctx);
 
 #endif // INTERCEPT_MIR_H

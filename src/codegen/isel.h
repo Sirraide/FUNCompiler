@@ -120,7 +120,14 @@ void isel_table_free(ISelTable *table);
 ///
 /// \param filename The name of the file to parse.
 /// \param data The file contents.
+/// \param platform_name The name of the platform (e.g. "sysv", "mswin").
+/// \param dialect The assembly dialect to use (e.g. "intel", "att").
 /// \return The parsed table, or NULL if there was an error.
-NODISCARD ISelTable *isel_table_parse(span filename, span data);
+NODISCARD ISelTable *isel_table_parse(
+  span filename,
+  span data,
+  span platform_name,
+  span dialect
+);
 
 #endif // INTERCEPT_ISel_H
