@@ -43,7 +43,9 @@ static VReg ir_to_mir_impl(CodegenContext *ctx, IRInstruction *ir, bool increase
     default:
       UNREACHABLE();
 
-    case IR_PHI: return ir->phi.vreg;
+    case IR_PHI:
+      foreach_ptr (IRPhiArgument*, arg, ir->phi.args) arg->value->mi->refcount++;
+      return ir->phi.vreg;
 
     case IR_IMMEDIATE: {
       MI;
@@ -167,6 +169,7 @@ static VReg ir_to_mir_impl(CodegenContext *ctx, IRInstruction *ir, bool increase
     case IR_UNREACHABLE: return VREG_INVALID;
   }
 
+  if (increase_refcount) ir->mi->refcount++;
   return ir->mi->vreg;
 }
 
