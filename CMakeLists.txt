@@ -136,6 +136,9 @@ if (NOT MSVC)
     -Wno-format-zero-length -Wno-comment
     -Wno-cast-function-type
 
+    # Temporary for refactoring. Remove this later.
+    -Wno-unused-variable -Wno-unused-but-set-variable
+
     -fdiagnostics-color=always
   )
 else()
